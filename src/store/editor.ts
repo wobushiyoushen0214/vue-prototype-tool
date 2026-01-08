@@ -1,45 +1,92 @@
 import { defineStore } from 'pinia';
 import { v4 as uuidv4 } from 'uuid';
 import { cloneDeep } from 'lodash-es';
-import type { EditorNode, ComponentSchema, ProjectConfig, EditorMode, Annotation } from '@/types/editor';
+import type { EditorNode, ComponentSchema, ProjectConfig, EditorMode, Annotation, Scene, Project } from '@/types/editor';
+
+const PROJECTS_STORAGE_KEY = 'vpt_projects_v2'; // 升级版本号以清理旧缓存
+const CURRENT_PROJECT_ID_KEY = 'vpt_current_project_id';
 
 const parseValue = (val: string | number) => {
   if (typeof val === 'number') return val;
   return parseFloat(val) || 0;
 };
 
+const DEFAULT_CONFIG: ProjectConfig = {
+  width: 750,
+  height: 1334,
+  backgroundColor: '#ffffff',
+  tokens: [],
+  lockSize: false,
+};
+
+// 代码层面的默认项目数据
+const createDefaultProjects = (): Project[] => {
+  const firstSceneId = uuidv4();
+  return [
+    {
+      id: uuidv4(),
+      name: '我的第一个项目',
+      thumbnail: '',
+      scenes: [
+        {
+          id: firstSceneId,
+          name: '画布 1',
+          nodes: [],
+          config: { ...DEFAULT_CONFIG },
+          annotations: [],
+          x: 0,
+          y: 0,
+        }
+      ],
+      currentSceneId: firstSceneId,
+      updatedAt: Date.now(),
+    }
+  ];
+};
+
+const DEFAULT_PROJECTS = createDefaultProjects();
+
 export const useEditorStore = defineStore('editor', {
   state: () => ({
+    // 项目管理
+    projects: [] as Project[],
+    currentProjectId: '' as string,
+    
+    // 当前编辑器状态
+    scenes: [] as Scene[],
+    currentSceneId: '' as string,
+    selectedSceneIds: [] as string[],
     nodes: [] as EditorNode[],
     selectedNodeIds: [] as string[],
-    config: {
-      width: 1920,
-      height: 1080,
-      backgroundColor: '#ffffff',
-      tokens: [],
-    } as ProjectConfig,
+    config: { ...DEFAULT_CONFIG } as ProjectConfig,
     history: [] as { nodes: EditorNode[], config: ProjectConfig }[],
     historyIndex: -1,
-    isBatching: false, // 是否正在进行批量更新，避免重复记录历史
-    draggedComponent: null as ComponentSchema | null, // 正在从侧边栏拖拽的组件
-    zoom: 0.6, // 画布缩放比例
-    offset: { x: 0, y: 0 }, // 画布偏移量
-    clipboard: [] as EditorNode[], // 剪贴板
-    mode: 'edit' as EditorMode, // 编辑/预览模式
-    annotations: [] as Annotation[], // 标注
+    isBatching: false,
+    draggedComponent: null as ComponentSchema | null,
+    zoom: 0.5,
+    offset: { x: 0, y: 0 },
+    clipboard: [] as EditorNode[],
+    sceneClipboard: null as Scene[] | null,
+    mode: 'edit' as EditorMode,
+    annotations: [] as Annotation[],
   }),
 
   getters: {
+    currentProject: (state) => {
+      return state.projects.find(p => p.id === state.currentProjectId) || null;
+    },
+    currentProjectName: (state) => {
+      const p = state.projects.find(p => p.id === state.currentProjectId);
+      return p ? p.name : '';
+    },
     treeNodes: (state) => {
       const nodeMap = new Map<string, EditorNode>();
       const rootNodes: EditorNode[] = [];
       
-      // 1. Create a map of all nodes with empty children array
       state.nodes.forEach(node => {
         nodeMap.set(node.id, { ...cloneDeep(node), children: [] });
       });
 
-      // 2. Build the tree
       nodeMap.forEach(node => {
         if (node.parentId && nodeMap.has(node.parentId)) {
           const parent = nodeMap.get(node.parentId)!;
@@ -55,15 +102,419 @@ export const useEditorStore = defineStore('editor', {
     selectedNodes: (state) => {
       return state.nodes.filter(node => state.selectedNodeIds.includes(node.id));
     },
-    // 获取第一个选中的节点，用于属性面板显示
     firstSelectedNode: (state) => {
       if (state.selectedNodeIds.length === 0) return null;
       const id = state.selectedNodeIds[0];
       return state.nodes.find(n => n.id === id) || null;
+    },
+    getSceneTreeNodes: (state) => {
+      return (nodes: EditorNode[]) => {
+        const nodeMap = new Map<string, EditorNode>();
+        const rootNodes: EditorNode[] = [];
+        
+        nodes.forEach(node => {
+          nodeMap.set(node.id, { ...cloneDeep(node), children: [] });
+        });
+
+        nodeMap.forEach(node => {
+          if (node.parentId && nodeMap.has(node.parentId)) {
+            const parent = nodeMap.get(node.parentId)!;
+            parent.children = parent.children || [];
+            parent.children.push(node);
+          } else {
+            rootNodes.push(node);
+          }
+        });
+
+        return rootNodes;
+      };
+    },
+    currentScene: (state) => {
+      return state.scenes.find(s => s.id === state.currentSceneId);
     }
   },
 
   actions: {
+    // --- 项目管理 Actions ---
+    initProjects() {
+      const stored = localStorage.getItem(PROJECTS_STORAGE_KEY);
+      if (stored) {
+        try {
+          this.projects = JSON.parse(stored);
+        } catch (e) {
+          console.error('Failed to parse projects', e);
+          this.projects = cloneDeep(DEFAULT_PROJECTS);
+        }
+      } else {
+        // 如果没有缓存，优先读取代码层面的默认数据
+        this.projects = cloneDeep(DEFAULT_PROJECTS);
+        this.saveAllProjects();
+      }
+    },
+
+    saveAllProjects() {
+      localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(this.projects));
+    },
+
+    createProject(name: string = '未命名项目') {
+      const firstSceneId = uuidv4();
+      const newProject: Project = {
+        id: uuidv4(),
+        name,
+        scenes: [{
+          id: firstSceneId,
+          name: '画布 1',
+          nodes: [],
+          config: { ...DEFAULT_CONFIG },
+          annotations: [],
+        }],
+        currentSceneId: firstSceneId,
+        updatedAt: Date.now(),
+      };
+      this.projects.unshift(newProject);
+      this.saveAllProjects();
+      return newProject.id;
+    },
+
+    openProject(id: string) {
+      const project = this.projects.find(p => p.id === id);
+      if (!project) return;
+
+      this.resetEditorState(); // 加载前先重置所有编辑器状态
+      this.currentProjectId = id;
+      this.scenes = cloneDeep(project.scenes);
+      
+      // 确保每个场景都有坐标
+      this.scenes.forEach((scene, index) => {
+        if (scene.x === undefined) scene.x = index * (scene.config.width + 100);
+        if (scene.y === undefined) scene.y = 0;
+      });
+
+      // 恢复到上次编辑的场景或第一个场景
+      const targetSceneId = project.currentSceneId || (this.scenes[0]?.id || '');
+      this.currentSceneId = ''; // 强制触发 switchScene 逻辑
+      this.switchScene(targetSceneId);
+      
+      this.zoom = 0.5;
+      this.offset = { x: 0, y: 0 };
+    },
+
+    resetEditorState() {
+      this.currentProjectId = '';
+      this.scenes = [];
+      this.currentSceneId = '';
+      this.nodes = [];
+      this.config = { ...DEFAULT_CONFIG };
+      this.annotations = [];
+      this.selectedNodeIds = [];
+      this.history = [];
+      this.historyIndex = -1;
+      this.zoom = 0.5;
+      this.offset = { x: 0, y: 0 };
+    },
+
+    deleteProject(id: string) {
+      const index = this.projects.findIndex(p => p.id === id);
+      if (index !== -1) {
+        this.projects.splice(index, 1);
+        if (this.currentProjectId === id) {
+          this.currentProjectId = '';
+        }
+        this.saveAllProjects();
+      }
+    },
+
+    renameProject(id: string, name: string) {
+      const project = this.projects.find(p => p.id === id);
+      if (project) {
+        project.name = name;
+        this.saveAllProjects();
+      }
+    },
+
+    updateProjectThumbnail(id: string, thumbnail: string) {
+      const project = this.projects.find(p => p.id === id);
+      if (project) {
+        project.thumbnail = thumbnail;
+        this.saveAllProjects();
+      }
+    },
+
+    goBackToList() {
+      this.syncCurrentProject();
+      this.currentProjectId = '';
+    },
+
+    syncCurrentProject() {
+      if (!this.currentProjectId) return;
+      const project = this.projects.find(p => p.id === this.currentProjectId);
+      if (!project) return;
+
+      this.syncCurrentScene();
+      project.scenes = cloneDeep(this.scenes);
+      project.currentSceneId = this.currentSceneId;
+      project.updatedAt = Date.now();
+      this.saveAllProjects();
+    },
+
+    // --- 画布 (原场景) 管理 Actions ---
+    addScene(name?: string, config?: ProjectConfig, position?: { x: number, y: number }) {
+      this.syncCurrentScene();
+
+      // 计算新画布位置
+      const lastScene = this.scenes[this.scenes.length - 1];
+      let newX = position ? position.x : (lastScene ? (lastScene.x || 0) + (lastScene.config.width + 100) : 0);
+      let newY = position ? position.y : 0;
+
+      const newScene: Scene = {
+        id: uuidv4(),
+        name: name || `画布 ${this.scenes.length + 1}`,
+        nodes: [],
+        config: config ? cloneDeep(config) : { ...DEFAULT_CONFIG },
+        annotations: [],
+        x: newX,
+        y: newY,
+      };
+      this.scenes.push(newScene);
+      this.switchScene(newScene.id);
+    },
+
+    copyScene(sceneId: string) {
+      this.syncCurrentScene();
+      const scene = this.scenes.find(s => s.id === sceneId);
+      if (!scene) return;
+
+      const newSceneId = uuidv4();
+      
+      // 深度克隆节点并更新 ID 的辅助函数
+      const cloneNodesWithNewIds = (nodes: EditorNode[], parentId?: string): EditorNode[] => {
+        return nodes.map(node => {
+          const newNodeId = uuidv4();
+          const newNode: EditorNode = {
+            ...cloneDeep(node),
+            id: newNodeId,
+            parentId: parentId || node.parentId
+          };
+          if (node.children && node.children.length > 0) {
+            newNode.children = cloneNodesWithNewIds(node.children, newNodeId);
+          }
+          return newNode;
+        });
+      };
+
+      const newScene: Scene = {
+        ...cloneDeep(scene),
+        id: newSceneId,
+        name: `${scene.name} (副本)`,
+        x: (scene.x || 0) + (scene.config.width + 100),
+        y: scene.y || 0,
+        nodes: cloneNodesWithNewIds(scene.nodes)
+      };
+
+      // 更新平铺数组中的 parentId 引用关系
+      const idMap = new Map<string, string>();
+      const buildIdMap = (oldNodes: EditorNode[], newNodes: EditorNode[]) => {
+        oldNodes.forEach((oldNode, index) => {
+          const newNode = newNodes[index];
+          if (newNode) {
+            idMap.set(oldNode.id, newNode.id);
+            if (oldNode.children && newNode.children) {
+              buildIdMap(oldNode.children, newNode.children);
+            }
+          }
+        });
+      };
+      buildIdMap(scene.nodes, newScene.nodes);
+
+      const updateRefs = (nodes: EditorNode[]) => {
+        nodes.forEach(node => {
+          if (node.parentId && idMap.has(node.parentId)) {
+            node.parentId = idMap.get(node.parentId);
+          }
+          if (node.children) updateRefs(node.children);
+        });
+      };
+      updateRefs(newScene.nodes);
+
+      this.scenes.push(newScene);
+      this.switchScene(newSceneId);
+    },
+
+    copySelectedScenesToClipboard() {
+      if (this.selectedSceneIds.length === 0) return;
+      const selectedScenes = this.scenes.filter(s => this.selectedSceneIds.includes(s.id));
+      this.sceneClipboard = cloneDeep(selectedScenes);
+    },
+
+    pasteSceneFromClipboard(position?: { x: number, y: number }) {
+      if (!this.sceneClipboard || this.sceneClipboard.length === 0) return;
+      
+      const clipboard = this.sceneClipboard;
+      const firstScene = clipboard[0];
+      if (!firstScene) return;
+
+      const newScenes: Scene[] = [];
+      const offsetX = position ? position.x - (firstScene.x || 0) : 50;
+      const offsetY = position ? position.y - (firstScene.y || 0) : 50;
+
+      clipboard.forEach(scene => {
+        const newSceneId = uuidv4();
+        
+        // 深度克隆节点并更新 ID 的辅助函数
+        const cloneNodesWithNewIds = (nodes: EditorNode[], parentId?: string): EditorNode[] => {
+          return nodes.map(node => {
+            const newNodeId = uuidv4();
+            const newNode: EditorNode = {
+              ...cloneDeep(node),
+              id: newNodeId,
+              parentId: parentId || node.parentId
+            };
+            if (node.children && node.children.length > 0) {
+              newNode.children = cloneNodesWithNewIds(node.children, newNodeId);
+            }
+            return newNode;
+          });
+        };
+
+        const newScene: Scene = {
+          ...cloneDeep(scene),
+          id: newSceneId,
+          name: `${scene.name} (粘贴)`,
+          x: (scene.x || 0) + offsetX,
+          y: (scene.y || 0) + offsetY,
+          nodes: cloneNodesWithNewIds(scene.nodes)
+        };
+
+        // 更新引用关系
+        const idMap = new Map<string, string>();
+        const buildIdMap = (oldNodes: EditorNode[], newNodes: EditorNode[]) => {
+          oldNodes.forEach((oldNode, index) => {
+            const newNode = newNodes[index];
+            if (newNode) {
+              idMap.set(oldNode.id, newNode.id);
+              if (oldNode.children && newNode.children) {
+                buildIdMap(oldNode.children, newNode.children);
+              }
+            }
+          });
+        };
+        buildIdMap(scene.nodes, newScene.nodes);
+
+        const updateRefs = (nodes: EditorNode[]) => {
+          nodes.forEach(node => {
+            if (node.parentId && idMap.has(node.parentId)) {
+              node.parentId = idMap.get(node.parentId) || node.parentId;
+            }
+            if (node.children) updateRefs(node.children);
+          });
+        };
+        updateRefs(newScene.nodes);
+        
+        newScenes.push(newScene);
+      });
+
+      this.scenes.push(...newScenes);
+      this.selectedSceneIds = newScenes.map(s => s.id);
+      const firstNewScene = newScenes[0];
+      if (firstNewScene) {
+        this.switchScene(firstNewScene.id);
+      }
+      this.saveHistory();
+    },
+
+    updateScenePosition(sceneId: string, x: number, y: number) {
+      const scene = this.scenes.find(s => s.id === sceneId);
+      if (scene) {
+        scene.x = x;
+        scene.y = y;
+      }
+    },
+
+    updateSelectedScenesPosition(dx: number, dy: number) {
+      this.selectedSceneIds.forEach(id => {
+        const scene = this.scenes.find(s => s.id === id);
+        if (scene) {
+          scene.x = (scene.x || 0) + dx;
+          scene.y = (scene.y || 0) + dy;
+        }
+      });
+    },
+
+    selectScene(sceneId: string, multi: boolean = false) {
+      if (!multi) {
+        this.selectedSceneIds = [sceneId];
+      } else if (!this.selectedSceneIds.includes(sceneId)) {
+        this.selectedSceneIds.push(sceneId);
+      }
+      this.currentSceneId = sceneId;
+    },
+
+    clearSceneSelection() {
+      this.selectedSceneIds = [];
+    },
+
+    toggleSceneLock(sceneId: string) {
+      const scene = this.scenes.find(s => s.id === sceneId);
+      if (scene) {
+        scene.config.lockSize = !scene.config.lockSize;
+        if (scene.id === this.currentSceneId) {
+          this.config.lockSize = scene.config.lockSize;
+        }
+      }
+    },
+
+    switchScene(id: string) {
+      if (this.currentSceneId === id) return;
+
+      this.syncCurrentScene();
+
+      const scene = this.scenes.find(s => s.id === id);
+      if (scene) {
+        this.currentSceneId = id;
+        this.nodes = cloneDeep(scene.nodes);
+        this.config = cloneDeep(scene.config);
+        this.annotations = cloneDeep(scene.annotations || []);
+        this.selectedNodeIds = [];
+        
+        this.history = [];
+        this.historyIndex = -1;
+        this.saveHistory();
+      }
+    },
+
+    syncCurrentScene() {
+      const currentScene = this.scenes.find(s => s.id === this.currentSceneId);
+      if (currentScene) {
+        currentScene.nodes = cloneDeep(this.nodes);
+        currentScene.config = cloneDeep(this.config);
+        currentScene.annotations = cloneDeep(this.annotations);
+      }
+    },
+
+    deleteScene(id: string) {
+      if (this.scenes.length <= 1) return;
+
+      const index = this.scenes.findIndex(s => s.id === id);
+      if (index === -1) return;
+
+      this.scenes.splice(index, 1);
+      
+      if (this.currentSceneId === id) {
+        const nextIndex = Math.min(index, this.scenes.length - 1);
+        const nextScene = this.scenes[nextIndex];
+        if (nextScene) {
+          this.switchScene(nextScene.id);
+        }
+      }
+    },
+
+    renameScene(id: string, name: string) {
+      const scene = this.scenes.find(s => s.id === id);
+      if (scene) {
+        scene.name = name;
+      }
+    },
+
     addNode(schema: ComponentSchema, parentId?: string, position?: { x: number; y: number }) {
       const newNode: EditorNode = {
         id: uuidv4(),
@@ -118,6 +569,8 @@ export const useEditorStore = defineStore('editor', {
     },
     
     checkAndExpandCanvas(rect: { left: number; top: number; right: number; bottom: number }) {
+      if (this.config.lockSize) return;
+
       let newWidth = this.config.width;
       let newHeight = this.config.height;
       let shiftX = 0;
@@ -473,6 +926,19 @@ export const useEditorStore = defineStore('editor', {
     },
 
     initHistory() {
+      // 初始化第一个场景（如果没有）
+      if (this.scenes.length === 0) {
+        const firstScene: Scene = {
+          id: uuidv4(),
+          name: '场景 1',
+          nodes: cloneDeep(this.nodes),
+          config: cloneDeep(this.config),
+          annotations: cloneDeep(this.annotations),
+        };
+        this.scenes.push(firstScene);
+        this.currentSceneId = firstScene.id;
+      }
+
       if (this.history.length === 0) {
         this.saveHistory();
       }
@@ -518,8 +984,11 @@ export const useEditorStore = defineStore('editor', {
       this.annotations = [];
     },
     exportDesign() {
+      this.syncCurrentScene();
       const payload = {
-        version: 1,
+        version: 2,
+        scenes: cloneDeep(this.scenes),
+        currentSceneId: this.currentSceneId,
         config: cloneDeep(this.config),
         nodes: cloneDeep(this.nodes),
       };
@@ -532,6 +1001,26 @@ export const useEditorStore = defineStore('editor', {
         parsed = JSON.parse(input);
       } catch {
         return false;
+      }
+
+      // 处理多场景导入 (v2)
+      if (parsed?.version === 2 && Array.isArray(parsed.scenes)) {
+        this.scenes = cloneDeep(parsed.scenes);
+        const targetId = parsed.currentSceneId || this.scenes[0]?.id;
+        
+        // 切换到目标场景
+        const scene = this.scenes.find(s => s.id === targetId) || this.scenes[0];
+        if (scene) {
+          this.currentSceneId = scene.id;
+          this.nodes = cloneDeep(scene.nodes);
+          this.config = cloneDeep(scene.config);
+          this.annotations = cloneDeep(scene.annotations || []);
+        }
+        this.selectedNodeIds = [];
+        this.history = [];
+        this.historyIndex = -1;
+        this.saveHistory();
+        return true;
       }
 
       const nextNodes = Array.isArray(parsed) ? parsed : parsed?.nodes;
@@ -547,6 +1036,17 @@ export const useEditorStore = defineStore('editor', {
           tokens: Array.isArray(nextConfig.tokens) ? cloneDeep(nextConfig.tokens) : (this.config.tokens ?? []),
         };
       }
+
+      // 同时也创建一个场景
+      const sceneId = uuidv4();
+      this.scenes = [{
+        id: sceneId,
+        name: '场景 1',
+        nodes: cloneDeep(this.nodes),
+        config: cloneDeep(this.config),
+        annotations: cloneDeep(this.annotations || []),
+      }];
+      this.currentSceneId = sceneId;
 
       this.selectedNodeIds = [];
       this.annotations = [];

@@ -12,6 +12,59 @@
     </div>
 
     <div class="sidebar-top">
+      <!-- 画布管理 -->
+      <div class="scenes-manager">
+        <div class="scenes-header">
+          <span class="scenes-title">画布</span>
+          <el-button text size="small" @click="handleAddScene">
+            <el-icon><Plus /></el-icon>
+          </el-button>
+        </div>
+        <div class="scenes-list">
+          <div 
+            v-for="scene in store.scenes" 
+            :key="scene.id"
+            class="scene-item"
+            :class="{ active: store.currentSceneId === scene.id }"
+            @click="store.switchScene(scene.id)"
+          >
+            <el-input
+              v-if="editingSceneId === scene.id"
+              v-model="editingSceneName"
+              size="small"
+              class="scene-rename-input"
+              @blur="finishRenameScene(scene.id)"
+              @keyup.enter="finishRenameScene(scene.id)"
+              v-focus
+            />
+            <span v-else class="scene-name" @dblclick="startRenameScene(scene)">{{ scene.name }}</span>
+            <div class="scene-actions">
+              <el-button 
+                text 
+                size="small" 
+                class="scene-action-btn"
+                @click.stop="store.toggleSceneLock(scene.id)"
+              >
+                <el-icon :class="{ 'is-locked': scene.config.lockSize }">
+                  <Lock v-if="scene.config.lockSize" />
+                  <Unlock v-else />
+                </el-icon>
+              </el-button>
+              <el-dropdown trigger="click" @command="(cmd: string) => handleSceneCommand(cmd, scene)">
+                <el-icon class="scene-more"><MoreFilled /></el-icon>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="rename">重命名</el-dropdown-item>
+                    <el-dropdown-item command="duplicate">复制</el-dropdown-item>
+                    <el-dropdown-item command="delete" divided :disabled="store.scenes.length <= 1">删除</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="custom-tab-bar">
         <div 
           v-for="tab in [{label: '组件', value: 'components'}, {label: '图层', value: 'layers'}, {label: '素材', value: 'assets'}]"
@@ -243,16 +296,53 @@ import {
   Postcard,
   Search,
   Lock,
-  Unlock
+  Unlock,
+  Plus,
+  MoreFilled
 } from '@element-plus/icons-vue';
+import { cloneDeep } from 'lodash-es';
 
 const store = useEditorStore();
 const mainTab = ref('components');
+
+// 画布管理状态
+const editingSceneId = ref<string | null>(null);
+const editingSceneName = ref('');
+
+const vFocus = {
+  mounted: (el: HTMLInputElement) => el.focus()
+};
+
+const handleAddScene = () => {
+  store.addScene(`画布 ${store.scenes.length + 1}`);
+};
+
+const startRenameScene = (scene: any) => {
+  editingSceneId.value = scene.id;
+  editingSceneName.value = scene.name;
+};
+
+const finishRenameScene = (id: string) => {
+  if (editingSceneName.value.trim()) {
+    store.renameScene(id, editingSceneName.value.trim());
+  }
+  editingSceneId.value = null;
+};
+
+const handleSceneCommand = (cmd: string, scene: any) => {
+  if (cmd === 'rename') {
+    startRenameScene(scene);
+  } else if (cmd === 'delete') {
+    store.deleteScene(scene.id);
+  } else if (cmd === 'duplicate') {
+    store.copyScene(scene.id);
+  }
+};
 const componentLibrary = ref<'all' | 'builtin' | 'element-plus' | 'team'>('all');
 const componentLibraryTabs = [
   { label: '全部', value: 'all' },
   { label: '基础', value: 'builtin' },
-  { label: 'Element Plus', value: 'element-plus' },
+  { label: 'Element', value: 'element-plus' },
   { label: '团队组件', value: 'team' },
 ] as const;
 const isDragging = ref(false);
@@ -386,20 +476,59 @@ const inferPropsFromVue = (sfcText: string) => {
   const propsMeta: Record<string, any> = {};
   const defaultProps: Record<string, any> = {};
 
-  const m = sfcText.match(/defineProps\s*\(\s*\{([\s\S]*?)\}\s*\)/);
-  if (!m) return { propsMeta, defaultProps };
-  const body = m[1] ?? '';
-  const re = /(\w+)\s*:\s*\{[\s\S]*?type\s*:\s*(String|Number|Boolean)[\s\S]*?default\s*:\s*([^,\n}]+)[\s\S]*?\}/g;
-  let mm: RegExpExecArray | null;
-  while ((mm = re.exec(body))) {
-    const key = mm[1];
-    const t = mm[2];
-    const d = mm[3] ?? '';
-    if (!key) continue;
-    const metaType = t === 'Number' ? 'number' : (t === 'Boolean' ? 'boolean' : 'string');
-    propsMeta[key] = { label: key, type: metaType };
-    defaultProps[key] = parseLiteral(d);
+  // 1. 匹配 defineProps<{ ... }>() TS 接口写法
+  const tsMatch = sfcText.match(/defineProps\s*<\s*\{([\s\S]*?)\}\s*>/);
+  if (tsMatch) {
+    const body = tsMatch[1] ?? '';
+    const re = /(\w+)\s*(\?)?\s*:\s*(string|number|boolean)/g;
+    let mm;
+    while ((mm = re.exec(body))) {
+      const key = mm[1];
+      const type = mm[3];
+      if (!key) continue;
+      propsMeta[key] = { label: key, type: type === 'number' ? 'number' : (type === 'boolean' ? 'boolean' : 'string') };
+      defaultProps[key] = type === 'number' ? 0 : (type === 'boolean' ? false : '');
+    }
+    
+    // 尝试匹配 withDefaults 的默认值
+    const withDefaultsMatch = sfcText.match(/withDefaults\s*\(\s*defineProps[\s\S]*?,\s*\{([\s\S]*?)\}\s*\)/);
+    if (withDefaultsMatch) {
+      const defaultsBody = withDefaultsMatch[1] ?? '';
+      const defRe = /(\w+)\s*:\s*([^,\n}]+)/g;
+      let dmm;
+      while ((dmm = defRe.exec(defaultsBody))) {
+        const key = dmm[1];
+        const val = dmm[2]?.trim();
+        if (key && val && defaultProps[key] !== undefined) {
+          defaultProps[key] = parseLiteral(val);
+        }
+      }
+    }
+    return { propsMeta, defaultProps };
   }
+
+  // 2. 匹配 defineProps({ ... }) 对象写法
+  const objMatch = sfcText.match(/defineProps\s*\(\s*\{([\s\S]*?)\}\s*\)/);
+  if (objMatch) {
+    const body = objMatch[1] ?? '';
+    const re = /(\w+)\s*:\s*\{[\s\S]*?type\s*:\s*(String|Number|Boolean)[\s\S]*?(?:default\s*:\s*([^,\n}]+))?[\s\S]*?\}/g;
+    let mm;
+    while ((mm = re.exec(body))) {
+      const key = mm[1];
+      const t = mm[2];
+      const d = mm[3] ?? '';
+      if (!key) continue;
+      const metaType = t === 'Number' ? 'number' : (t === 'Boolean' ? 'boolean' : 'string');
+      propsMeta[key] = { label: key, type: metaType };
+      if (d) {
+        defaultProps[key] = parseLiteral(d);
+      } else {
+        defaultProps[key] = metaType === 'number' ? 0 : (metaType === 'boolean' ? false : '');
+      }
+    }
+    return { propsMeta, defaultProps };
+  }
+
   return { propsMeta, defaultProps };
 };
 
@@ -666,6 +795,104 @@ const filteredLayers = computed(() => {
   border-bottom: 1px solid var(--border-color);
   background: rgba(255, 255, 255, 0.92);
   backdrop-filter: saturate(150%) blur(10px);
+  flex-shrink: 0;
+}
+
+.scenes-manager {
+  margin-bottom: 16px;
+}
+
+.scenes-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.scenes-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.scenes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.scene-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+  transition: all 0.2s;
+  border: 1px solid transparent;
+}
+
+.scene-item:hover {
+  background-color: var(--el-fill-color-light);
+}
+
+.scene-item.active {
+  background-color: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+  border-color: var(--el-color-primary-light-5);
+}
+
+.scene-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 8px;
+}
+
+.scene-rename-input {
+  flex: 1;
+  margin-right: 8px;
+}
+
+.scene-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.scene-item:hover .scene-actions {
+  opacity: 1;
+}
+
+.scene-action-btn {
+  padding: 4px !important;
+  height: auto !important;
+}
+
+.is-locked {
+  color: var(--primary-color);
+}
+
+.scene-more {
+  font-size: 14px;
+  color: var(--el-text-color-placeholder);
+  padding: 2px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.scene-more:hover {
+  background-color: var(--el-fill-color);
+  color: var(--el-text-color-primary);
 }
 
 .sidebar-search :deep(.el-input__wrapper) {

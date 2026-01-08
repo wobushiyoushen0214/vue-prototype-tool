@@ -43,6 +43,26 @@ export interface ProjectConfig {
   height: number;
   backgroundColor: string;
   tokens: DesignToken[];
+  lockSize?: boolean; // 锁定宽高
+}
+
+export interface Scene {
+  id: string;
+  name: string;
+  nodes: EditorNode[];
+  config: ProjectConfig;
+  annotations: Annotation[];
+  x?: number; // 画布在工作区的 X 坐标
+  y?: number; // 画布在工作区的 Y 坐标
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  scenes: Scene[];
+  currentSceneId: string;
+  thumbnail?: string;
+  updatedAt: number;
 }
 
 export type EditorMode = 'edit' | 'preview';

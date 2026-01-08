@@ -49,6 +49,13 @@ const nodeStyle = computed(() => {
   const style = props.node.style || {};
   const parentNode = props.node.parentId ? store.nodes.find(n => n.id === props.node.parentId) : null;
   const isFlexChild = parentNode?.type === 'container' && parentNode.props?.display === 'flex';
+  
+  // 层级计算逻辑：
+  // 1. 基础层级 1
+  // 2. 选中的节点提升到最高层级 (防止被其他节点遮挡)
+  // 3. 如果是容器，z-index 设为 auto 或 1，让子节点自然覆盖在其上
+  let zIndex: number | string = isSelected.value ? 1000 : 1;
+  
   return {
     position: (isFlexChild ? 'static' : 'absolute') as 'static' | 'absolute',
     left: isFlexChild ? undefined : style.left,
@@ -56,7 +63,8 @@ const nodeStyle = computed(() => {
     width: style.width,
     height: style.height,
     transform: style.transform,
-    zIndex: isSelected.value ? 10 : 1
+    zIndex,
+    ...style
   };
 });
 

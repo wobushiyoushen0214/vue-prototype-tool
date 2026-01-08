@@ -2,75 +2,119 @@
   <div class="canvas-wrapper" 
        ref="wrapperRef"
        @mousedown="handleWrapperMouseDown"
+       @mousemove="handleMouseMove"
        @wheel="handleWheel"
+       @contextmenu.prevent="handleContextMenu($event)"
   >
     <div 
-      class="editor-canvas" 
-      :class="{ 'preview-mode': store.mode === 'preview' }"
-      ref="canvasRef"
-      @dragover.prevent
-      @drop="handleDrop"
-      @mousedown="handleCanvasClick"
-      @node-mousedown="handleNodeMouseDown"
+      class="viewport"
       :style="{
-        width: store.config.width + 'px',
-        height: store.config.height + 'px',
-        backgroundColor: store.config.backgroundColor,
         transform: `scale(${store.zoom}) translate(${store.offset.x}px, ${store.offset.y}px)`,
+        transformOrigin: '0 0',
+        width: '100%',
+        height: '100%',
         '--zoom': store.zoom
       }"
     >
-      <EditorNodeRenderer
-        v-for="node in store.treeNodes"
-        :key="node.id"
-        :node="node"
-      />
+      <div 
+        v-for="scene in store.scenes"
+        :key="scene.id"
+        class="editor-canvas" 
+        :data-scene-id="scene.id"
+        :class="{ 
+          'preview-mode': store.mode === 'preview',
+          'is-active': scene.id === store.currentSceneId,
+          'is-selected': store.selectedSceneIds.includes(scene.id),
+          'is-dragging': isDraggingScene && (dragSceneId === scene.id || store.selectedSceneIds.includes(scene.id))
+        }"
+        :ref="el => { if (scene.id === store.currentSceneId) canvasRef = el as HTMLElement }"
+        @dragover.prevent
+        @drop="handleDrop($event, scene.id)"
+        @mousedown="handleCanvasClick($event, scene.id)"
+        @contextmenu.prevent.stop="handleContextMenu($event, scene.id)"
+        @node-mousedown="handleNodeMouseDown"
+        :style="{
+          position: 'absolute',
+          left: (scene.x || 0) + 'px',
+          top: (scene.y || 0) + 'px',
+          width: scene.config.width + 'px',
+          height: scene.config.height + 'px',
+          backgroundColor: scene.config.backgroundColor,
+          zIndex: scene.id === store.currentSceneId ? 100 : (store.selectedSceneIds.includes(scene.id) ? 50 : 1),
+          boxShadow: scene.id === store.currentSceneId 
+            ? '0 0 0 2px var(--primary-color), 0 20px 50px rgba(0,0,0,0.15)' 
+            : '0 4px 12px rgba(0,0,0,0.08)',
+          opacity: 1,
+          transition: isDraggingScene && (dragSceneId === scene.id || store.selectedSceneIds.includes(scene.id)) 
+            ? 'none' 
+            : 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+          pointerEvents: 'auto'
+        }"
+      >
+        <div v-if="scene.id !== store.currentSceneId" class="canvas-inactive-label-tag">
+          <div class="scene-label">{{ scene.name || '未命名场景' }}</div>
+        </div>
+        <template v-if="scene.id === store.currentSceneId">
+          <EditorNodeRenderer
+            v-for="node in store.treeNodes"
+            :key="node.id"
+            :node="node"
+          />
+        </template>
+        <template v-else>
+          <EditorNodeRenderer
+            v-for="node in store.getSceneTreeNodes(scene.nodes)"
+            :key="node.id"
+            :node="node"
+          />
+        </template>
 
-      <!-- 标注 -->
-      <template v-if="store.mode === 'preview'">
-        <AnnotationMarker
-          v-for="(ann, index) in store.annotations"
-          :key="ann.id"
-          :id="ann.id"
-          :x="ann.x"
-          :y="ann.y"
-          :content="ann.content"
-          :index="index"
+        <!-- 标注 -->
+        <template v-if="store.mode === 'preview' && scene.id === store.currentSceneId">
+          <AnnotationMarker
+            v-for="(ann, index) in store.annotations"
+            :key="ann.id"
+            :id="ann.id"
+            :x="ann.x"
+            :y="ann.y"
+            :content="ann.content"
+            :index="index"
+          />
+        </template>
+
+        <!-- 多选/单选控制 (仅对激活画布显示) -->
+        <Moveable
+          v-if="scene.id === store.currentSceneId && (targetElements.length > 0 || targetElement) && store.mode === 'edit' && !lockedSelected"
+          :target="targetElements.length > 1 ? targetElements : targetElement"
+          :draggable="true"
+          :resizable="true"
+          :rotatable="true"
+          :snappable="true"
+          :snapCenter="true"
+          :snapHorizontal="true"
+          :snapVertical="true"
+          :snapElement="true"
+          :elementGuidelines="elementGuidelines"
+          :snapThreshold="10"
+          :isDisplaySnapDigit="true"
+          :verticalGuidelines="[0, scene.config.width]"
+          :horizontalGuidelines="[0, scene.config.height]"
+          :bounds="null"
+          :zoom="store.zoom"
+          @drag="onDrag"
+          @resize="onResize"
+          @rotate="onRotate"
+          @dragEnd="onDragEnd"
+          @resizeEnd="onResizeEnd"
+          @rotateEnd="onRotateEnd"
+          @dragGroup="onDragGroup"
+          @resizeGroup="onResizeGroup"
+          @rotateGroup="onRotateGroup"
+          @dragGroupEnd="onDragGroupEnd"
+          @resizeGroupEnd="onResizeGroupEnd"
+          @rotateGroupEnd="onRotateGroupEnd"
         />
-      </template>
-
-      <!-- 多选/单选控制 -->
-      <Moveable
-        v-if="(targetElements.length > 0 || targetElement) && store.mode === 'edit' && !lockedSelected"
-        :target="targetElements.length > 1 ? targetElements : targetElement"
-        :draggable="true"
-        :resizable="true"
-        :rotatable="true"
-        :snappable="true"
-        :snapCenter="true"
-        :snapHorizontal="true"
-        :snapVertical="true"
-        :snapElement="true"
-        :elementGuidelines="elementGuidelines"
-        :snapThreshold="10"
-        :isDisplaySnapDigit="true"
-        :verticalGuidelines="[0, store.config.width]"
-        :horizontalGuidelines="[0, store.config.height]"
-        :bounds="null"
-        :zoom="store.zoom"
-        @drag="onDrag"
-        @resize="onResize"
-        @rotate="onRotate"
-        @dragEnd="onDragEnd"
-        @resizeEnd="onResizeEnd"
-        @rotateEnd="onRotateEnd"
-        @dragGroup="onDragGroup"
-        @resizeGroup="onResizeGroup"
-        @rotateGroup="onRotateGroup"
-        @dragGroupEnd="onDragGroupEnd"
-        @resizeGroupEnd="onResizeGroupEnd"
-        @rotateGroupEnd="onRotateGroupEnd"
-      />
+      </div>
     </div>
 
     <!-- 框选矩形 -->
@@ -85,6 +129,46 @@
         <div class="distance-guide-label" :style="g.labelStyle">{{ g.label }}</div>
       </template>
     </template>
+
+    <!-- 画布右键菜单 -->
+    <div 
+      v-if="contextMenu.show" 
+      class="canvas-context-menu"
+      :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+      @click.stop
+    >
+      <template v-if="contextMenu.sceneId">
+        <div class="menu-header">画布操作</div>
+        <div class="menu-item" @click="handleContextAction('copy')">
+          <el-icon><CopyDocument /></el-icon>
+          <span>复制画布</span>
+        </div>
+        <div class="menu-item" @click="handleContextAction('paste')" :class="{ disabled: !store.sceneClipboard }">
+          <el-icon><DocumentAdd /></el-icon>
+          <span>粘贴为新画布</span>
+        </div>
+        <div class="menu-divider"></div>
+        <div class="menu-item" @click="handleContextAction('lock')">
+          <el-icon><Lock v-if="store.scenes.find(s => s.id === contextMenu.sceneId)?.config.lockSize" /><Unlock v-else /></el-icon>
+          <span>{{ store.scenes.find(s => s.id === contextMenu.sceneId)?.config.lockSize ? '解锁尺寸' : '锁定尺寸' }}</span>
+        </div>
+        <div class="menu-item danger" @click="handleContextAction('delete')" :class="{ disabled: store.scenes.length <= 1 }">
+          <el-icon><Delete /></el-icon>
+          <span>删除画布</span>
+        </div>
+      </template>
+      <template v-else>
+        <div class="menu-item" @click="handleContextAction('add')">
+          <el-icon><Plus /></el-icon>
+          <span>新建画布</span>
+        </div>
+        <div class="menu-divider"></div>
+        <div class="menu-item" @click="handleContextAction('paste')" :class="{ disabled: !store.sceneClipboard }">
+          <el-icon><DocumentAdd /></el-icon>
+          <span>在此处粘贴画布</span>
+        </div>
+      </template>
+    </div>
   </div>
 </template>
 
@@ -94,6 +178,7 @@ import { useEditorStore } from '@/store/editor';
 import Moveable from 'vue3-moveable';
 import EditorNodeRenderer from '@/components/Editor/EditorNodeRenderer.vue';
 import AnnotationMarker from '@/components/Editor/AnnotationMarker.vue';
+import { CopyDocument, Lock, Unlock, Delete } from '@element-plus/icons-vue';
 import { throttle } from 'lodash-es';
 
 const store = useEditorStore();
@@ -113,10 +198,78 @@ let startY = 0;
 let initialOffset = { x: 0, y: 0 };
 const spacePressed = ref(false);
 
+// Mouse position for pasting
+const lastMousePos = ref({ x: 0, y: 0 });
+
 // Selection state
 const isSelecting = ref(false);
 const selectionStart = ref({ x: 0, y: 0 });
 const selectionEnd = ref({ x: 0, y: 0 });
+
+// Context Menu state
+const contextMenu = ref({
+  show: false,
+  x: 0,
+  y: 0,
+  sceneId: ''
+});
+
+const handleContextMenu = (e: MouseEvent, sceneId?: string) => {
+  contextMenu.value = {
+    show: true,
+    x: e.clientX,
+    y: e.clientY,
+    sceneId: sceneId || ''
+  };
+  
+  // 如果是在特定画布上右键，且该画布未被选中，则选中它
+  if (sceneId && !store.selectedSceneIds.includes(sceneId)) {
+    store.selectScene(sceneId, e.shiftKey);
+  }
+};
+
+const closeContextMenu = () => {
+  contextMenu.value.show = false;
+};
+
+const handleContextAction = (action: string) => {
+  const sceneId = contextMenu.value.sceneId;
+
+  switch (action) {
+    case 'copy':
+      if (sceneId) store.copySelectedScenesToClipboard();
+      break;
+    case 'add':
+      if (wrapperRef.value) {
+        const rect = wrapperRef.value.getBoundingClientRect();
+        const x = (contextMenu.value.x - rect.left) / store.zoom - store.offset.x;
+        const y = (contextMenu.value.y - rect.top) / store.zoom - store.offset.y;
+        store.addScene(undefined, undefined, { x, y });
+      }
+      break;
+    case 'paste':
+      if (wrapperRef.value) {
+        const rect = wrapperRef.value.getBoundingClientRect();
+        const x = (contextMenu.value.x - rect.left) / store.zoom - store.offset.x;
+        const y = (contextMenu.value.y - rect.top) / store.zoom - store.offset.y;
+        store.pasteSceneFromClipboard({ x, y });
+      }
+      break;
+    case 'delete':
+      if (sceneId) store.deleteScene(sceneId);
+      break;
+    case 'lock':
+      if (sceneId) store.toggleSceneLock(sceneId);
+      break;
+  }
+  closeContextMenu();
+};
+
+// 画布拖拽状态
+const isDraggingScene = ref(false);
+let dragSceneId = '';
+let dragStartPos = { x: 0, y: 0 };
+let initialScenePos = { x: 0, y: 0 };
 
 const selectionBoxStyle = computed(() => {
   const left = Math.min(selectionStart.value.x, selectionEnd.value.x);
@@ -136,7 +289,10 @@ const selectionBoxStyle = computed(() => {
   };
 });
 
-const handleDrop = (e: DragEvent) => {
+const handleDrop = (e: DragEvent, sceneId?: string) => {
+  if (sceneId && sceneId !== store.currentSceneId) {
+    store.switchScene(sceneId);
+  }
   if (!store.draggedComponent || !canvasRef.value) return;
 
   const rect = canvasRef.value.getBoundingClientRect();
@@ -172,13 +328,17 @@ const handleDrop = (e: DragEvent) => {
 };
 
 // 接收来自子组件的 mousedown 事件
-const handleNodeMouseDown = (e: CustomEvent) => {
+const handleNodeMouseDown = () => {
     // 逻辑已在 EditorNodeRenderer 中处理了 selectNode
     // 这里主要是为了确保 Moveable 目标更新
     nextTick(updateTarget);
 };
 
-const handleCanvasClick = (e: MouseEvent) => {
+const handleCanvasClick = (e: MouseEvent, sceneId?: string) => {
+  if (sceneId && sceneId !== store.currentSceneId) {
+    store.switchScene(sceneId);
+  }
+
   if (store.mode === 'preview' && e.altKey && canvasRef.value) {
     const rect = canvasRef.value.getBoundingClientRect();
     const x = (e.clientX - rect.left) / store.zoom;
@@ -190,6 +350,36 @@ const handleCanvasClick = (e: MouseEvent) => {
   // 如果是按住空格或中键，不清除选中
   if (e.button === 1 || spacePressed.value) return;
   
+  // 左键点击画布：处理画布移动
+  if (e.button === 0 && store.mode === 'edit') {
+    const target = e.target as HTMLElement;
+    const isNode = target.closest('.editor-node');
+    const isMoveable = target.closest('.moveable-control') || target.closest('.moveable-line');
+    
+    // 如果不是点击组件或控制点
+    if (!isNode && !isMoveable) {
+      isDraggingScene.value = true;
+      dragSceneId = sceneId || store.currentSceneId;
+      const scene = store.scenes.find(s => s.id === dragSceneId);
+      if (scene) {
+        // 如果点击的画布不在选中列表中，且没按 shift，则设为唯一选中
+        if (!store.selectedSceneIds.includes(dragSceneId) && !e.shiftKey) {
+          store.selectScene(dragSceneId);
+        } else if (e.shiftKey) {
+          store.selectScene(dragSceneId, true);
+        }
+
+        dragStartPos = { x: e.clientX, y: e.clientY };
+        initialScenePos = { x: scene.x || 0, y: scene.y || 0 };
+        
+        window.addEventListener('mousemove', handleSceneDragMove);
+        window.addEventListener('mouseup', handleSceneDragUp);
+        e.stopPropagation(); 
+        return;
+      }
+    }
+  }
+
   // 点击空白处，清除选中
   // 只有在没有按修饰键时才清除
   if (!e.shiftKey && !e.metaKey && !e.ctrlKey) {
@@ -197,6 +387,37 @@ const handleCanvasClick = (e: MouseEvent) => {
       targetElement.value = null;
       targetElements.value = [];
   }
+};
+
+const handleSceneDragMove = (e: MouseEvent) => {
+  if (!isDraggingScene.value || !dragSceneId) return;
+  
+  const dx = (e.clientX - dragStartPos.x) / store.zoom;
+  const dy = (e.clientY - dragStartPos.y) / store.zoom;
+  
+  // 如果当前拖拽的画布在选中列表中，则移动所有选中的画布
+  if (store.selectedSceneIds.includes(dragSceneId)) {
+    store.updateSelectedScenesPosition(dx, dy);
+  } else {
+    // 否则只移动当前拖拽的画布
+    const scene = store.scenes.find(s => s.id === dragSceneId);
+    if (scene) {
+      store.updateScenePosition(dragSceneId, initialScenePos.x + dx, initialScenePos.y + dy);
+    }
+  }
+  
+  // 更新起始位置以便增量移动（如果是多选）
+  if (store.selectedSceneIds.includes(dragSceneId)) {
+    dragStartPos = { x: e.clientX, y: e.clientY };
+  }
+};
+
+const handleSceneDragUp = () => {
+  isDraggingScene.value = false;
+  dragSceneId = '';
+  window.removeEventListener('mousemove', handleSceneDragMove);
+  window.removeEventListener('mouseup', handleSceneDragUp);
+  store.saveHistory();
 };
 
 const handleWrapperMouseDown = (e: MouseEvent) => {
@@ -231,6 +452,16 @@ const handleWrapperMouseDown = (e: MouseEvent) => {
 };
 
 const handleMouseMove = (e: MouseEvent) => {
+  // 实时记录鼠标在画布坐标系中的位置
+  if (wrapperRef.value) {
+    const rect = wrapperRef.value.getBoundingClientRect();
+    // 转换为视口坐标系（考虑 zoom 和 offset）
+    lastMousePos.value = {
+      x: (e.clientX - rect.left) / store.zoom - store.offset.x,
+      y: (e.clientY - rect.top) / store.zoom - store.offset.y
+    };
+  }
+
   if (!isPanning) return;
   const dx = (e.clientX - startX) / store.zoom;
   const dy = (e.clientY - startY) / store.zoom;
@@ -263,33 +494,41 @@ const handleSelectionUp = () => {
 };
 
 const calculateSelection = () => {
-    if (!canvasRef.value) return;
-    
     const left = Math.min(selectionStart.value.x, selectionEnd.value.x);
     const top = Math.min(selectionStart.value.y, selectionEnd.value.y);
     const right = Math.max(selectionStart.value.x, selectionEnd.value.x);
     const bottom = Math.max(selectionStart.value.y, selectionEnd.value.y);
     
-    // 如果框太小，视为点击，忽略
     if (right - left < 5 && bottom - top < 5) return;
 
-    const nodes = document.querySelectorAll('.editor-node');
-    const selectedIds: string[] = [];
-
-    nodes.forEach((node) => {
-        const rect = node.getBoundingClientRect();
-        // 简单的 AABB 碰撞检测
-        // 只要有交叉就算选中
+    // 1. 检查是否选中了组件
+    const nodeElements = document.querySelectorAll('.editor-node');
+    const selectedNodeIds: string[] = [];
+    nodeElements.forEach((el) => {
+        const rect = el.getBoundingClientRect();
         if (rect.left < right && rect.right > left && rect.top < bottom && rect.bottom > top) {
-            selectedIds.push(node.id);
+            selectedNodeIds.push(el.id);
         }
     });
 
-    // 更新 Store
-    // 如果按住了 Shift，则是增量选择，否则是替换
-    // 这里简单起见，直接选中这些
-    if (selectedIds.length > 0) {
-        selectedIds.forEach(id => store.selectNode(id, true));
+    // 2. 检查是否选中了画布
+    const canvasElements = document.querySelectorAll('.editor-canvas');
+    const selectedSceneIds: string[] = [];
+    canvasElements.forEach((el) => {
+        const rect = el.getBoundingClientRect();
+        // 获取 dataset 中的 sceneId
+        const sceneId = (el as HTMLElement).dataset.sceneId;
+        if (sceneId && rect.left < right && rect.right > left && rect.top < bottom && rect.bottom > top) {
+            selectedSceneIds.push(sceneId);
+        }
+    });
+
+    if (selectedNodeIds.length > 0) {
+        selectedNodeIds.forEach(id => store.selectNode(id, true));
+        store.clearSceneSelection();
+    } else if (selectedSceneIds.length > 0) {
+        selectedSceneIds.forEach(id => store.selectScene(id, true));
+        store.clearSelection();
     }
 };
 
@@ -314,6 +553,20 @@ const handleKeyDown = (e: KeyboardEvent) => {
     spacePressed.value = true;
     if (wrapperRef.value) wrapperRef.value.style.cursor = 'grab';
   }
+
+  // 快捷键复制粘贴画布
+  if ((e.ctrlKey || e.metaKey) && e.code === 'KeyC') {
+    if (store.selectedSceneIds.length > 0) {
+      store.copySelectedScenesToClipboard();
+      e.preventDefault();
+    }
+  }
+  if ((e.ctrlKey || e.metaKey) && e.code === 'KeyV') {
+    if (store.sceneClipboard) {
+      store.pasteSceneFromClipboard(lastMousePos.value);
+      e.preventDefault();
+    }
+  }
 };
 
 const handleKeyUp = (e: KeyboardEvent) => {
@@ -326,11 +579,13 @@ const handleKeyUp = (e: KeyboardEvent) => {
 onMounted(() => {
   window.addEventListener('keydown', handleKeyDown);
   window.addEventListener('keyup', handleKeyUp);
+  window.addEventListener('mousedown', closeContextMenu);
 });
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown);
   window.removeEventListener('keyup', handleKeyUp);
+  window.removeEventListener('mousedown', closeContextMenu);
 });
 
 const elementGuidelines = ref<HTMLElement[]>([]);
@@ -389,7 +644,7 @@ const buildDistanceGuides = (targetEl: HTMLElement, baseLeft: number, baseTop: n
   let bestH: { dist: number; x1: number; x2: number; y: number; side: 'left' | 'right' } | null = null;
   let bestV: { dist: number; y1: number; y2: number; x: number; side: 'top' | 'bottom' } | null = null;
 
-  others.forEach(el => {
+  for (const el of others) {
     const r = el.getBoundingClientRect();
     const overlapY = Math.min(rect.bottom, r.bottom) - Math.max(rect.top, r.top);
     const overlapX = Math.min(rect.right, r.right) - Math.max(rect.left, r.left);
@@ -419,7 +674,7 @@ const buildDistanceGuides = (targetEl: HTMLElement, baseLeft: number, baseTop: n
         bestV = { dist: distBottom, y1: rect.bottom, y2: r.top, x, side: 'bottom' };
       }
     }
-  });
+  }
 
   let nextLeft = baseLeft;
   let nextTop = baseTop;
@@ -664,19 +919,115 @@ watch(() => store.selectedNodeIds, () => {
   cursor: default;
 }
 
+.viewport {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
 .editor-canvas {
   position: absolute;
-  top: 50px;
-  left: 50px;
-  transform-origin: 0 0;
-  border-radius: var(--radius-lg);
-  border: 1px solid rgba(17, 24, 39, 0.08);
-  box-shadow: var(--shadow-lg);
+  flex-shrink: 0;
+  border-radius: 0;
+  border: 1px solid rgba(0, 0, 0, 0.1);
   background-image: none;
-  transition: box-shadow 0.3s ease;
+  overflow: hidden;
 }
+
+.canvas-inactive-label-tag {
+   position: absolute;
+   top: -40px;
+   left: 0;
+   display: flex;
+   align-items: center;
+   z-index: 100;
+   cursor: pointer;
+ }
+ 
+ .scene-label {
+   padding: 4px 12px;
+   background: var(--primary-color);
+   border-radius: 4px 4px 0 0;
+   font-size: 12px;
+   font-weight: 600;
+   color: white;
+   box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+   white-space: nowrap;
+   transform: scale(calc(1 / var(--zoom)));
+   transform-origin: left bottom;
+ }
 .editor-canvas.preview-mode {
   box-shadow: var(--shadow-md);
+}
+
+.selection-box {
+  position: fixed;
+  border: 1px solid var(--primary-color);
+  background-color: rgba(37, 99, 235, 0.1);
+  z-index: 9999;
+  pointer-events: none;
+}
+
+.canvas-context-menu {
+  position: fixed;
+  z-index: 3000;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.15), 0 0 1px rgba(0,0,0,0.1);
+  padding: 6px;
+  min-width: 160px;
+  user-select: none;
+  border: 1px solid #f0f0f0;
+}
+
+.menu-header {
+  padding: 8px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #909399;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.menu-divider {
+  height: 1px;
+  background: #f0f0f0;
+  margin: 4px 0;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-color);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.menu-item:hover:not(.disabled) {
+  background-color: var(--bg-color-hover);
+  color: var(--primary-color);
+}
+
+.menu-item.danger {
+  color: var(--el-color-danger);
+}
+
+.menu-item.danger:hover:not(.disabled) {
+  background-color: var(--el-color-danger-light-9);
+}
+
+.menu-item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.menu-item el-icon {
+  font-size: 16px;
 }
 
 /* Moveable 样式优化 */

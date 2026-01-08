@@ -2,22 +2,28 @@
   <el-container class="editor-layout">
     <el-header class="header">
       <div class="header-left">
-        <div class="logo">vue-prototype-tool</div>
-        <!-- <div class="project-pill">vue-prototype-tool</div> -->
-      </div>
-      
-      <div class="header-center" v-if="store.mode === 'edit'">
-         <el-tooltip content="左对齐" :hide-after="0"><el-button text @click="handleAlign('left', $event)"><el-icon><d-arrow-left /></el-icon></el-button></el-tooltip>
-         <el-tooltip content="水平居中" :hide-after="0"><el-button text @click="handleAlign('center', $event)"><el-icon><expand /></el-icon></el-button></el-tooltip>
-         <el-tooltip content="右对齐" :hide-after="0"><el-button text @click="handleAlign('right', $event)"><el-icon><d-arrow-right /></el-icon></el-button></el-tooltip>
-         <el-divider direction="vertical" />
-         <el-tooltip content="顶对齐" :hide-after="0"><el-button text @click="handleAlign('top', $event)"><el-icon><top /></el-icon></el-button></el-tooltip>
-         <el-tooltip content="垂直居中" :hide-after="0"><el-button text @click="handleAlign('middle', $event)"><el-icon><rank /></el-icon></el-button></el-tooltip>
-         <el-tooltip content="底对齐" :hide-after="0"><el-button text @click="handleAlign('bottom', $event)"><el-icon><bottom /></el-icon></el-button></el-tooltip>
+        <div class="logo" @click="handleGoBack" style="cursor: pointer;">
+          <el-icon style="margin-right: 4px;"><ArrowLeft /></el-icon>
+          vue-prototype-tool
+        </div>
+        <el-divider direction="vertical" />
+        <div class="project-name">{{ store.currentProjectName || '未命名项目' }}</div>
       </div>
       
       <div class="header-right">
-        <el-space :size="16">
+        <div class="header-actions">
+          <!-- 对齐工具合并到此处 -->
+          <div class="align-tools" v-if="store.mode === 'edit'">
+            <el-tooltip content="左对齐" :hide-after="0"><el-button text @click="handleAlign('left', $event)"><el-icon><d-arrow-left /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="水平居中" :hide-after="0"><el-button text @click="handleAlign('center', $event)"><el-icon><expand /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="右对齐" :hide-after="0"><el-button text @click="handleAlign('right', $event)"><el-icon><d-arrow-right /></el-icon></el-button></el-tooltip>
+            <el-divider direction="vertical" />
+            <el-tooltip content="顶对齐" :hide-after="0"><el-button text @click="handleAlign('top', $event)"><el-icon><top /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="垂直居中" :hide-after="0"><el-button text @click="handleAlign('middle', $event)"><el-icon><rank /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="底对齐" :hide-after="0"><el-button text @click="handleAlign('bottom', $event)"><el-icon><bottom /></el-icon></el-button></el-tooltip>
+            <el-divider direction="vertical" />
+          </div>
+
           <div class="mode-switch-container">
             <div 
               class="mode-switch-slider" 
@@ -69,7 +75,7 @@
             v-if="store.mode === 'edit'"
             v-model="selectedCanvasPreset"
             size="small"
-            style="width: 160px"
+            style="width: 160px; flex-shrink: 0;"
             @change="handleCanvasPresetChange"
           >
             <el-option
@@ -80,11 +86,10 @@
             />
             <el-option key="custom" label="自定义" value="custom" />
           </el-select>
-          <el-button v-if="store.mode === 'edit'" type="warning" plain size="small" @click="handleNewProject">新建项目</el-button>
           <el-button type="success" plain size="small" @click="showCodePreview = true">生成代码</el-button>
           <el-button type="primary" plain size="small" @click="openImportJsonDialog">导入 JSON</el-button>
           <el-button type="primary" plain size="small" @click="openExportJsonDialog">导出 JSON</el-button>
-        </el-space>
+        </div>
       </div>
     </el-header>
 
@@ -153,11 +158,12 @@
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, computed, watch } from 'vue';
+import { useRouter, useRoute } from 'vue-router';
 import Sidebar from '@/components/Editor/Sidebar.vue';
 import EditorCanvas from '@/components/Editor/EditorCanvas.vue';
 import PropertyPanel from '@/components/Editor/PropertyPanel.vue';
 import { useEditorStore } from '@/store/editor';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { generateVueCode } from '@/utils/code-generator';
 import { throttle } from 'lodash-es';
 import {
@@ -172,10 +178,46 @@ import {
   Plus,
   Minus,
   Monitor,
-  Edit
+  Edit,
+  ArrowLeft
 } from '@element-plus/icons-vue';
+import { toJpeg } from 'html-to-image';
 
 const store = useEditorStore();
+const router = useRouter();
+const route = useRoute();
+
+onMounted(() => {
+  const id = route.params.id as string;
+  if (id) {
+    store.openProject(id);
+  } else {
+    router.push('/');
+  }
+});
+
+const handleGoBack = async () => {
+  // 生成缩略图
+  try {
+    const canvasEl = document.querySelector('.editor-canvas') as HTMLElement;
+    if (canvasEl) {
+      const thumbnail = await toJpeg(canvasEl, {
+        quality: 0.8,
+        width: store.config.width,
+        height: store.config.height,
+        style: {
+          transform: 'none',
+        }
+      });
+      store.updateProjectThumbnail(store.currentProjectId, thumbnail);
+    }
+  } catch (e) {
+    console.error('Failed to generate thumbnail', e);
+  }
+  
+  store.goBackToList();
+  router.push('/');
+};
 
 const leftPanelWidth = ref(312);
 const rightPanelWidth = ref(320);
@@ -194,6 +236,7 @@ const designJsonDraft = ref('');
 
 const DRAFT_KEY = 'vue-prototype-tool:draft:v1';
 const canvasPresets = [
+  { key: 'mobile-750-1334', label: 'Mobile 750×1334 (2x)', width: 750, height: 1334 },
   { key: 'web-1920-1080', label: 'Web 1920×1080', width: 1920, height: 1080 },
   { key: 'web-1440-900', label: 'Web 1440×900', width: 1440, height: 900 },
   { key: 'mobile-390-844', label: 'Mobile 390×844', width: 390, height: 844 },
@@ -218,14 +261,15 @@ const handleCanvasPresetChange = (key: string) => {
   store.saveHistory();
 };
 
-const handleNewProject = () => {
-  const preset = canvasPresets.find(p => p.key === selectedCanvasPreset.value);
-  store.newProject(preset ? { width: preset.width, height: preset.height } : undefined);
-  try {
-    localStorage.removeItem(DRAFT_KEY);
-  } catch {
-  }
-  ElMessage.success('已新建项目');
+const handleNewScene = () => {
+  ElMessageBox.confirm('确定要新建一个场景吗？当前场景的数据会被保留。', '提示', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'info'
+  }).then(() => {
+    store.addScene('');
+    ElMessage.success('已新建场景');
+  }).catch(() => {});
 };
 
 const handleCopyCode = async () => {
@@ -301,7 +345,7 @@ const saveDraftThrottled = throttle(() => {
   }
 }, 800, { leading: false, trailing: true });
 
-watch(() => [store.nodes, store.config], () => {
+watch(() => [store.nodes, store.config, store.currentSceneId], () => {
   saveDraftThrottled();
 }, { deep: true });
 
@@ -471,42 +515,52 @@ const handleResetZoom = () => {
   z-index: 100;
   box-shadow: var(--shadow-sm);
 }
-.header-left, .header-right {
+.header-left {
   display: flex;
   align-items: center;
-  flex: 1;
+  flex: 0 0 auto; /* Logo 区域不再占据剩余空间 */
   min-width: 0;
+  justify-content: flex-start;
+  margin-right: 24px;
 }
 .header-right {
+  display: flex;
+  align-items: center;
+  flex: 1; /* 占据所有剩余空间 */
+  min-width: 0;
   justify-content: flex-end;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   overflow-x: auto;
   overflow-y: hidden;
+  white-space: nowrap;
+  padding: 0 4px;
+  max-width: 100%;
 }
-.header-center {
-  flex: 0 1 auto;
+.align-tools {
   display: flex;
-  justify-content: center;
   align-items: center;
   background: var(--panel-bg-muted);
   border: 1px solid var(--border-color-light);
   border-radius: 999px;
-  padding: 4px 6px;
-  max-width: fit-content;
-  margin: 0 auto;
+  padding: 2px 4px;
+  flex-shrink: 0;
 }
-
-.header-right :deep(.el-space) {
-  flex-wrap: nowrap;
-  white-space: nowrap;
-}
-
-.header-right::-webkit-scrollbar {
+.header-actions::-webkit-scrollbar {
   height: 4px;
 }
-
-.header-right::-webkit-scrollbar-thumb {
+.header-actions::-webkit-scrollbar-thumb {
   background: rgba(17, 24, 39, 0.18);
   border-radius: 999px;
+}
+.header-actions :deep(.el-button),
+.header-actions :deep(.el-select),
+.header-actions .mode-switch-container,
+.header-actions .align-tools {
+  flex-shrink: 0;
 }
 .logo {
   font-size: 14px;
@@ -634,12 +688,14 @@ const handleResetZoom = () => {
 .mode-switch-container {
   display: flex;
   align-items: center;
-  background: var(--panel-bg-muted);
+  background: #f1f5f9; /* 强制使用一个可见的浅灰色背景 */
   border-radius: 999px;
   border: 1px solid var(--border-color-light);
   position: relative;
   width: 136px;
+  min-width: 136px;
   height: 32px;
+  flex-shrink: 0;
 }
 
 .mode-switch-slider {

@@ -469,20 +469,67 @@
     <div v-else class="canvas-settings">
       <div class="panel-header">
         <h3 class="node-title">画布设置</h3>
+        <div class="header-actions">
+          <el-button 
+            circle 
+            plain 
+            size="small" 
+            @click="store.toggleSceneLock(store.currentSceneId)" 
+            title="锁定/解锁画布尺寸"
+            v-if="store.currentScene"
+          >
+            <el-icon v-if="store.currentScene.config.lockSize"><Lock /></el-icon>
+            <el-icon v-else><Unlock /></el-icon>
+          </el-button>
+        </div>
       </div>
-      <div class="panel-content-inner">
+      <div class="panel-content-inner" v-if="store.currentScene">
         <el-form label-position="top" class="compact-form">
+          <el-row :gutter="10">
+            <el-col :span="12">
+              <el-form-item label="位置 X">
+                <el-input-number 
+                  v-model="store.currentScene.x" 
+                  controls-position="right" 
+                  style="width: 100%" 
+                  @change="store.saveHistory()"
+                />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="位置 Y">
+                <el-input-number 
+                  v-model="store.currentScene.y" 
+                  controls-position="right" 
+                  style="width: 100%" 
+                  @change="store.saveHistory()"
+                />
+              </el-form-item>
+            </el-col>
+          </el-row>
           <el-form-item label="宽度">
-            <el-input-number v-model="store.config.width" controls-position="right" style="width: 100%" />
+            <el-input-number 
+              v-model="store.currentScene.config.width" 
+              :disabled="store.currentScene.config.lockSize"
+              controls-position="right" 
+              style="width: 100%" 
+              @change="store.saveHistory()"
+            />
           </el-form-item>
           <el-form-item label="高度">
-            <el-input-number v-model="store.config.height" controls-position="right" style="width: 100%" />
+            <el-input-number 
+              v-model="store.currentScene.config.height" 
+              :disabled="store.currentScene.config.lockSize"
+              controls-position="right" 
+              style="width: 100%" 
+              @change="store.saveHistory()"
+            />
           </el-form-item>
           <el-form-item label="背景颜色">
             <div class="color-picker-wrapper">
-              <el-color-picker v-model="store.config.backgroundColor" />
-              <span class="color-value" :class="{ empty: !store.config.backgroundColor }">
-                {{ store.config.backgroundColor || '未设置' }}
+              <el-color-picker v-model="store.currentScene.config.backgroundColor" @change="store.saveHistory()" />
+              <span class="color-value" :class="{ empty: !store.currentScene.config.backgroundColor }">
+                {{ store.currentScene.config.backgroundColor || '未设置' }}
               </span>
             </div>
           </el-form-item>
