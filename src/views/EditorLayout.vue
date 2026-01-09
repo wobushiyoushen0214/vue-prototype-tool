@@ -234,7 +234,7 @@ const showDesignJsonDialog = ref(false);
 const designJsonMode = ref<'export' | 'import'>('export');
 const designJsonDraft = ref('');
 
-const DRAFT_KEY = 'vue-prototype-tool:draft:v1';
+const getDraftKey = (projectId: string) => `vue-prototype-tool:draft:v1:${projectId}`;
 const canvasPresets = [
   { key: 'mobile-750-1334', label: 'Mobile 750×1334 (2x)', width: 750, height: 1334 },
   { key: 'web-1920-1080', label: 'Web 1920×1080', width: 1920, height: 1080 },
@@ -340,7 +340,9 @@ const handleImportDesignJson = () => {
 
 const saveDraftThrottled = throttle(() => {
   try {
-    localStorage.setItem(DRAFT_KEY, store.exportDesign());
+    const pid = store.currentProjectId;
+    if (!pid) return;
+    localStorage.setItem(getDraftKey(pid), store.exportDesign());
   } catch {
   }
 }, 800, { leading: false, trailing: true });
@@ -427,10 +429,13 @@ const handleKeyDown = (e: KeyboardEvent) => {
 onMounted(() => {
   try {
     if (store.nodes.length === 0) {
-      const draft = localStorage.getItem(DRAFT_KEY);
-      if (draft) {
-        const ok = store.importDesign(draft);
-        if (ok) ElMessage.success('已从本地草稿恢复');
+      const pid = store.currentProjectId;
+      if (pid) {
+        const draft = localStorage.getItem(getDraftKey(pid));
+        if (draft) {
+          const ok = store.importDesign(draft);
+          if (ok) ElMessage.success('已从本地草稿恢复');
+        }
       }
     }
   } catch {

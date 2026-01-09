@@ -9,6 +9,7 @@
     }"
     :style="nodeStyle"
     @mousedown.stop="handleMouseDown"
+    @contextmenu.prevent.stop="handleContextMenu"
     v-show="!node.hidden"
   >
     <!-- 组件本身 -->
@@ -89,6 +90,35 @@ const handleMouseDown = (e: MouseEvent) => {
   const event = new CustomEvent('node-mousedown', { 
     detail: { id: props.node.id, originalEvent: e },
     bubbles: true 
+  });
+  e.target?.dispatchEvent(event);
+};
+
+const handleContextMenu = (e: MouseEvent) => {
+  if (store.mode === 'preview') return;
+  
+  // 阻止原生菜单
+  e.preventDefault();
+  e.stopPropagation();
+
+  // 确保选中该节点
+  if (!isSelected.value) {
+    store.selectNode(props.node.id, false);
+  }
+  
+  // 触发自定义事件，让 Canvas 捕获并显示菜单
+  const event = new CustomEvent('node-contextmenu', { 
+    detail: { 
+      id: props.node.id, 
+      originalEvent: {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        button: e.button,
+        shiftKey: e.shiftKey
+      } 
+    },
+    bubbles: true,
+    composed: true
   });
   e.target?.dispatchEvent(event);
 };

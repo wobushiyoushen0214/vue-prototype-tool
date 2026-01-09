@@ -468,24 +468,26 @@
     
     <div v-else class="canvas-settings">
       <div class="panel-header">
-        <h3 class="node-title">画布设置</h3>
+        <h3 class="node-title">
+          {{ isMultiScene ? `已选中 ${store.selectedSceneIds.length} 个画布` : '画布设置' }}
+        </h3>
         <div class="header-actions">
           <el-button 
             circle 
             plain 
             size="small" 
-            @click="store.toggleSceneLock(store.currentSceneId)" 
-            title="锁定/解锁画布尺寸"
-            v-if="store.currentScene"
+            @click="toggleAllLock" 
+            :title="allLocked ? '解锁尺寸' : '锁定尺寸'"
+            v-if="selectedScenes.length > 0"
           >
-            <el-icon v-if="store.currentScene.config.lockSize"><Lock /></el-icon>
+            <el-icon v-if="allLocked"><Lock /></el-icon>
             <el-icon v-else><Unlock /></el-icon>
           </el-button>
         </div>
       </div>
-      <div class="panel-content-inner" v-if="store.currentScene">
+      <div class="panel-content-inner" v-if="selectedScenes.length > 0">
         <el-form label-position="top" class="compact-form">
-          <el-row :gutter="10">
+          <el-row :gutter="10" v-if="!isMultiScene && store.currentScene">
             <el-col :span="12">
               <el-form-item label="位置 X">
                 <el-input-number 
@@ -509,27 +511,27 @@
           </el-row>
           <el-form-item label="宽度">
             <el-input-number 
-              v-model="store.currentScene.config.width" 
-              :disabled="store.currentScene.config.lockSize"
+              v-model="mixedWidth" 
+              :disabled="allLocked"
+              :placeholder="mixedWidth === undefined ? '混合' : ''"
               controls-position="right" 
               style="width: 100%" 
-              @change="store.saveHistory()"
             />
           </el-form-item>
           <el-form-item label="高度">
             <el-input-number 
-              v-model="store.currentScene.config.height" 
-              :disabled="store.currentScene.config.lockSize"
+              v-model="mixedHeight" 
+              :disabled="allLocked"
+              :placeholder="mixedHeight === undefined ? '混合' : ''"
               controls-position="right" 
               style="width: 100%" 
-              @change="store.saveHistory()"
             />
           </el-form-item>
           <el-form-item label="背景颜色">
             <div class="color-picker-wrapper">
-              <el-color-picker v-model="store.currentScene.config.backgroundColor" @change="store.saveHistory()" />
-              <span class="color-value" :class="{ empty: !store.currentScene.config.backgroundColor }">
-                {{ store.currentScene.config.backgroundColor || '未设置' }}
+              <el-color-picker v-model="mixedBgColor" />
+              <span class="color-value" :class="{ empty: !mixedBgColor }">
+                {{ mixedBgColor || (mixedBgColor === undefined ? '混合' : '未设置') }}
               </span>
             </div>
           </el-form-item>
@@ -549,9 +551,55 @@ import * as Icons from '@element-plus/icons-vue';
 const { Delete, Plus, CaretTop, CaretBottom, EditPen, Lock, Unlock, View, Hide } = Icons;
 
 const store = useEditorStore();
-const activeTab = ref<'style' | 'props'>('style');
+  const activeTab = ref<'style' | 'props'>('style');
 
-const selectedNode = computed(() => store.firstSelectedNode);
+  // --- 画布多选逻辑 ---
+  const selectedScenes = computed(() => {
+    return store.scenes.filter(s => store.selectedSceneIds.includes(s.id));
+  });
+
+  const isMultiScene = computed(() => store.selectedSceneIds.length > 1);
+
+  // 混合属性获取与设置
+  const getMixedConfig = (key: keyof import('@/types/editor').ProjectConfig) => {
+    if (!isMultiScene.value) return store.currentScene?.config[key];
+    const firstValue = selectedScenes.value[0]?.config[key];
+    const isSame = selectedScenes.value.every(s => s.config[key] === firstValue);
+    return isSame ? firstValue : undefined;
+  };
+
+  const updateMixedConfig = (key: keyof import('@/types/editor').ProjectConfig, value: any) => {
+    if (value === undefined || value === null) return;
+    store.updateSelectedScenesConfig({ [key]: value });
+    store.saveHistory();
+  };
+
+  const mixedWidth = computed({
+    get: () => getMixedConfig('width') as number,
+    set: (val) => updateMixedConfig('width', val)
+  });
+
+  const mixedHeight = computed({
+    get: () => getMixedConfig('height') as number,
+    set: (val) => updateMixedConfig('height', val)
+  });
+
+  const mixedBgColor = computed({
+    get: () => getMixedConfig('backgroundColor') as string,
+    set: (val) => updateMixedConfig('backgroundColor', val)
+  });
+
+  const allLocked = computed(() => {
+    return selectedScenes.value.every(s => s.config.lockSize);
+  });
+
+  const toggleAllLock = () => {
+    const target = !allLocked.value;
+    store.updateSelectedScenesConfig({ lockSize: target });
+    store.saveHistory();
+  };
+
+  const selectedNode = computed(() => store.firstSelectedNode);
 const editingLabel = ref(false);
 const labelDraft = ref('');
 

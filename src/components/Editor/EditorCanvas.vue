@@ -33,6 +33,7 @@
         @mousedown="handleCanvasClick($event, scene.id)"
         @contextmenu.prevent.stop="handleContextMenu($event, scene.id)"
         @node-mousedown="handleNodeMouseDown"
+        @node-contextmenu="handleNodeContextMenu"
         :style="{
           position: 'absolute',
           left: (scene.x || 0) + 'px',
@@ -136,8 +137,36 @@
       class="canvas-context-menu"
       :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
       @click.stop
+      @mousedown.stop
+      @mouseup.stop
+      @contextmenu.prevent
     >
-      <template v-if="contextMenu.sceneId">
+      <template v-if="contextMenu.nodeId">
+        <div class="menu-header">组件操作</div>
+        <div class="menu-item" @click="handleContextAction('copy-node')">
+          <el-icon><CopyDocument /></el-icon>
+          <span>复制组件</span>
+        </div>
+        <div class="menu-item" @click="handleContextAction('cut-node')">
+          <el-icon><Scissor /></el-icon>
+          <span>剪切组件</span>
+        </div>
+        <div class="menu-divider"></div>
+        <div class="menu-item" @click="handleContextAction('to-front')">
+          <el-icon><CaretTop /></el-icon>
+          <span>置顶</span>
+        </div>
+        <div class="menu-item" @click="handleContextAction('to-back')">
+          <el-icon><CaretBottom /></el-icon>
+          <span>置底</span>
+        </div>
+        <div class="menu-divider"></div>
+        <div class="menu-item danger" @click="handleContextAction('delete-node')">
+          <el-icon><Delete /></el-icon>
+          <span>删除组件</span>
+        </div>
+      </template>
+      <template v-else-if="contextMenu.sceneId">
         <div class="menu-header">画布操作</div>
         <div class="menu-item" @click="handleContextAction('copy')">
           <el-icon><CopyDocument /></el-icon>
@@ -169,6 +198,13 @@
         </div>
       </template>
     </div>
+
+    <!-- 框选框渲染 -->
+    <div 
+      v-if="isSelecting" 
+      class="selection-box" 
+      :style="selectionBoxStyle"
+    ></div>
   </div>
 </template>
 
@@ -178,7 +214,17 @@ import { useEditorStore } from '@/store/editor';
 import Moveable from 'vue3-moveable';
 import EditorNodeRenderer from '@/components/Editor/EditorNodeRenderer.vue';
 import AnnotationMarker from '@/components/Editor/AnnotationMarker.vue';
-import { CopyDocument, Lock, Unlock, Delete } from '@element-plus/icons-vue';
+import { 
+  CopyDocument, 
+  Lock, 
+  Unlock, 
+  Delete, 
+  Plus, 
+  DocumentAdd, 
+  Scissor, 
+  CaretTop, 
+  CaretBottom 
+} from '@element-plus/icons-vue';
 import { throttle } from 'lodash-es';
 
 const store = useEditorStore();
@@ -187,6 +233,36 @@ const wrapperRef = ref<HTMLElement | null>(null);
 const targetElement = ref<HTMLElement | null>(null);
 const targetElements = ref<HTMLElement[]>([]);
 const lockedSelected = ref(false);
+const centeredProjectId = ref<string>('');
+
+const centerViewportOnCurrentScene = () => {
+  const wrapper = wrapperRef.value;
+  if (!wrapper) return;
+  const scene = store.scenes.find(s => s.id === store.currentSceneId) || store.scenes[0];
+  if (!scene) return;
+  const rect = wrapper.getBoundingClientRect();
+  const zoom = store.zoom || 1;
+  const sceneX = scene.x ?? 0;
+  const sceneY = scene.y ?? 0;
+  const targetX = sceneX + scene.config.width / 2;
+  const targetY = sceneY + scene.config.height / 2;
+  store.setOffset({
+    x: rect.width / (2 * zoom) - targetX,
+    y: rect.height / (2 * zoom) - targetY
+  });
+};
+
+watch(
+  () => store.currentProjectId,
+  async (id) => {
+    if (!id) return;
+    if (centeredProjectId.value === id) return;
+    await nextTick();
+    centerViewportOnCurrentScene();
+    centeredProjectId.value = id;
+  },
+  { immediate: true }
+);
 
 type DistanceGuide = { lineStyle: Record<string, string>; labelStyle: Record<string, string>; label: string };
 const distanceGuides = ref<DistanceGuide[]>([]);
@@ -211,20 +287,29 @@ const contextMenu = ref({
   show: false,
   x: 0,
   y: 0,
-  sceneId: ''
+  sceneId: '',
+  nodeId: ''
 });
 
-const handleContextMenu = (e: MouseEvent, sceneId?: string) => {
+const handleContextMenu = (e: MouseEvent | { clientX: number, clientY: number, shiftKey?: boolean }, sceneId?: string, nodeId?: string) => {
   contextMenu.value = {
     show: true,
     x: e.clientX,
     y: e.clientY,
-    sceneId: sceneId || ''
+    sceneId: sceneId || '',
+    nodeId: nodeId || ''
   };
   
+  const isShift = 'shiftKey' in e ? e.shiftKey : false;
+
   // 如果是在特定画布上右键，且该画布未被选中，则选中它
   if (sceneId && !store.selectedSceneIds.includes(sceneId)) {
-    store.selectScene(sceneId, e.shiftKey);
+    store.selectScene(sceneId, isShift);
+  }
+
+  // 如果是在特定节点上右键，且该节点未被选中，则选中它
+  if (nodeId && !store.selectedNodeIds.includes(nodeId)) {
+    store.selectNode(nodeId, isShift);
   }
 };
 
@@ -261,13 +346,28 @@ const handleContextAction = (action: string) => {
     case 'lock':
       if (sceneId) store.toggleSceneLock(sceneId);
       break;
+    case 'copy-node':
+      store.copyNodes();
+      break;
+    case 'cut-node':
+      store.cutNodes();
+      break;
+    case 'delete-node':
+      store.deleteSelectedNodes();
+      break;
+    case 'to-front':
+      store.bringToFront();
+      break;
+    case 'to-back':
+      store.sendToBack();
+      break;
   }
   closeContextMenu();
 };
 
 // 画布拖拽状态
 const isDraggingScene = ref(false);
-let dragSceneId = '';
+let dragSceneId: string | null = null;
 let dragStartPos = { x: 0, y: 0 };
 let initialScenePos = { x: 0, y: 0 };
 
@@ -332,6 +432,12 @@ const handleNodeMouseDown = () => {
     // 逻辑已在 EditorNodeRenderer 中处理了 selectNode
     // 这里主要是为了确保 Moveable 目标更新
     nextTick(updateTarget);
+};
+
+const handleNodeContextMenu = (e: Event) => {
+    const customEvent = e as CustomEvent<{ id: string, originalEvent: MouseEvent }>;
+    const { id, originalEvent } = customEvent.detail;
+    handleContextMenu(originalEvent, undefined, id);
 };
 
 const handleCanvasClick = (e: MouseEvent, sceneId?: string) => {
@@ -483,23 +589,16 @@ const handleSelectionMove = (e: MouseEvent) => {
     selectionEnd.value = { x: e.clientX, y: e.clientY };
 };
 
-const handleSelectionUp = () => {
-    if (!isSelecting.value) return;
-    isSelecting.value = false;
-    window.removeEventListener('mousemove', handleSelectionMove);
-    window.removeEventListener('mouseup', handleSelectionUp);
-    
-    // 计算框选结果
-    calculateSelection();
-};
-
-const calculateSelection = () => {
+const calculateSelection = (e: MouseEvent) => {
     const left = Math.min(selectionStart.value.x, selectionEnd.value.x);
     const top = Math.min(selectionStart.value.y, selectionEnd.value.y);
     const right = Math.max(selectionStart.value.x, selectionEnd.value.x);
     const bottom = Math.max(selectionStart.value.y, selectionEnd.value.y);
     
+    // 如果选区太小，认为是普通点击，不执行框选
     if (right - left < 5 && bottom - top < 5) return;
+
+    const isMultiSelect = e.shiftKey || e.metaKey || e.ctrlKey;
 
     // 1. 检查是否选中了组件
     const nodeElements = document.querySelectorAll('.editor-node');
@@ -516,7 +615,6 @@ const calculateSelection = () => {
     const selectedSceneIds: string[] = [];
     canvasElements.forEach((el) => {
         const rect = el.getBoundingClientRect();
-        // 获取 dataset 中的 sceneId
         const sceneId = (el as HTMLElement).dataset.sceneId;
         if (sceneId && rect.left < right && rect.right > left && rect.top < bottom && rect.bottom > top) {
             selectedSceneIds.push(sceneId);
@@ -524,12 +622,23 @@ const calculateSelection = () => {
     });
 
     if (selectedNodeIds.length > 0) {
+        // 如果没有按住多选键，清除画布选中
+        if (!isMultiSelect) store.clearSceneSelection();
+        
         selectedNodeIds.forEach(id => store.selectNode(id, true));
-        store.clearSceneSelection();
     } else if (selectedSceneIds.length > 0) {
+        // 如果选中了画布且没有组件
         selectedSceneIds.forEach(id => store.selectScene(id, true));
-        store.clearSelection();
     }
+};
+
+const handleSelectionUp = (e: MouseEvent) => {
+    if (!isSelecting.value) return;
+    isSelecting.value = false;
+    window.removeEventListener('mousemove', handleSelectionMove);
+    window.removeEventListener('mouseup', handleSelectionUp);
+    
+    calculateSelection(e);
 };
 
 const handleWheel = (e: WheelEvent) => {
@@ -549,21 +658,81 @@ const handleWheel = (e: WheelEvent) => {
 };
 
 const handleKeyDown = (e: KeyboardEvent) => {
-  if (e.code === 'Space' && !e.repeat && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+  const isInput = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target as HTMLElement).isContentEditable;
+  if (isInput) return;
+
+  const isMod = e.ctrlKey || e.metaKey;
+  const key = e.key.toLowerCase();
+
+  // 空格键平移
+  if (e.code === 'Space' && !e.repeat) {
     spacePressed.value = true;
     if (wrapperRef.value) wrapperRef.value.style.cursor = 'grab';
   }
 
-  // 快捷键复制粘贴画布
-  if ((e.ctrlKey || e.metaKey) && e.code === 'KeyC') {
-    if (store.selectedSceneIds.length > 0) {
+  // 快捷键复制
+  if (isMod && key === 'c') {
+    if (store.selectedNodeIds.length > 0) {
+      store.copyNodes();
+      e.preventDefault();
+      e.stopPropagation();
+    } else if (store.selectedSceneIds.length > 0) {
       store.copySelectedScenesToClipboard();
       e.preventDefault();
+      e.stopPropagation();
     }
   }
-  if ((e.ctrlKey || e.metaKey) && e.code === 'KeyV') {
-    if (store.sceneClipboard) {
+
+  // 快捷键剪切
+  if (isMod && key === 'x') {
+    if (store.selectedNodeIds.length > 0) {
+      store.cutNodes();
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }
+
+  // 快捷键粘贴
+  if (isMod && key === 'v') {
+    if (store.clipboard && store.clipboard.length > 0) {
+      store.pasteNodes();
+      e.preventDefault();
+      e.stopPropagation();
+    } else if (store.sceneClipboard) {
       store.pasteSceneFromClipboard(lastMousePos.value);
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }
+
+  // 撤销重做
+  if (isMod && key === 'z') {
+    if (e.shiftKey) {
+      store.redo();
+    } else {
+      store.undo();
+    }
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  
+  if (isMod && key === 'y') {
+    store.redo();
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  // 删除
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (store.selectedNodeIds.length > 0) {
+      store.deleteSelectedNodes();
+      e.preventDefault();
+    } else if (store.selectedSceneIds.length > 0) {
+      store.selectedSceneIds.forEach(id => {
+        if (store.scenes.length > 1) {
+          store.deleteScene(id);
+        }
+      });
       e.preventDefault();
     }
   }

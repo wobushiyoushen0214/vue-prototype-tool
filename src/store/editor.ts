@@ -2,8 +2,9 @@ import { defineStore } from 'pinia';
 import { v4 as uuidv4 } from 'uuid';
 import { cloneDeep } from 'lodash-es';
 import type { EditorNode, ComponentSchema, ProjectConfig, EditorMode, Annotation, Scene, Project } from '@/types/editor';
+import { defaultProjectTemplate } from '../assets/templates/default-project';
 
-const PROJECTS_STORAGE_KEY = 'vpt_projects_v2'; // 升级版本号以清理旧缓存
+const PROJECTS_STORAGE_KEY = 'vpt_projects_v3'; // 升级版本号以强制使用新模板
 const CURRENT_PROJECT_ID_KEY = 'vpt_current_project_id';
 
 const parseValue = (val: string | number) => {
@@ -11,37 +12,87 @@ const parseValue = (val: string | number) => {
   return parseFloat(val) || 0;
 };
 
-const DEFAULT_CONFIG: ProjectConfig = {
+const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
   width: 750,
   height: 1334,
-  backgroundColor: '#ffffff',
+  backgroundColor: '#f5f7fa',
   tokens: [],
   lockSize: false,
 };
 
+const getTemplateConfig = () => {
+  try {
+    const template = defaultProjectTemplate as any;
+    if (template && template.scenes && template.scenes[0] && template.scenes[0].config) {
+      return {
+        ...DEFAULT_PROJECT_CONFIG,
+        ...template.scenes[0].config
+      };
+    }
+  } catch (e) {
+    console.error('Failed to get template config', e);
+  }
+  return { ...DEFAULT_PROJECT_CONFIG };
+};
+
+const DEFAULT_CONFIG: ProjectConfig = getTemplateConfig();
+
 // 代码层面的默认项目数据
 const createDefaultProjects = (): Project[] => {
-  const firstSceneId = uuidv4();
-  return [
-    {
+  try {
+    const template = cloneDeep(defaultProjectTemplate) as any;
+    
+    // 映射场景，保持 JSON 中的原始配置
+    const scenes: Scene[] = (template.scenes || []).map((scene: any) => ({
+      ...scene,
       id: uuidv4(),
-      name: '我的第一个项目',
-      thumbnail: '',
-      scenes: [
-        {
-          id: firstSceneId,
-          name: '画布 1',
-          nodes: [],
-          config: { ...DEFAULT_CONFIG },
-          annotations: [],
-          x: 0,
-          y: 0,
-        }
-      ],
-      currentSceneId: firstSceneId,
-      updatedAt: Date.now(),
+      nodes: (scene.nodes || []) as EditorNode[],
+      annotations: (scene.annotations || []) as Annotation[],
+      config: { ...scene.config } // 直接使用 JSON 中的 config
+    }));
+
+    // 如果 JSON 没场景，兜底创建一个
+    if (scenes.length === 0) {
+      scenes.push({
+        id: uuidv4(),
+        name: '主画布',
+        nodes: [],
+        config: { ...DEFAULT_CONFIG },
+        annotations: [],
+        x: 0,
+        y: 0,
+      });
     }
-  ];
+
+    const project: Project = {
+      ...template, // 继承 JSON 中的所有属性（包括 name, thumbnail 等）
+      id: uuidv4(),
+      updatedAt: Date.now(),
+      scenes: scenes,
+      currentSceneId: scenes[0] ? scenes[0].id : ''
+    };
+
+    return [project];
+  } catch (e) {
+    console.error('Failed to create default projects from template', e);
+    const firstSceneId = uuidv4();
+    return [{
+      id: uuidv4(),
+      name: '空白基础项目',
+      updatedAt: Date.now(),
+      scenes: [{
+        id: firstSceneId,
+        name: '主画布',
+        nodes: [],
+        config: { ...DEFAULT_CONFIG },
+        annotations: [],
+        x: 0,
+        y: 0,
+      }],
+      currentSceneId: firstSceneId,
+      thumbnail: ''
+    }];
+  }
 };
 
 const DEFAULT_PROJECTS = createDefaultProjects();
@@ -140,7 +191,12 @@ export const useEditorStore = defineStore('editor', {
       const stored = localStorage.getItem(PROJECTS_STORAGE_KEY);
       if (stored) {
         try {
-          this.projects = JSON.parse(stored);
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            this.projects = parsed;
+          } else {
+            this.projects = cloneDeep(DEFAULT_PROJECTS);
+          }
         } catch (e) {
           console.error('Failed to parse projects', e);
           this.projects = cloneDeep(DEFAULT_PROJECTS);
@@ -150,35 +206,86 @@ export const useEditorStore = defineStore('editor', {
         this.projects = cloneDeep(DEFAULT_PROJECTS);
         this.saveAllProjects();
       }
+
+      // 恢复当前选中的项目 ID
+      const savedCurrentId = localStorage.getItem(CURRENT_PROJECT_ID_KEY);
+      if (savedCurrentId && this.projects.length > 0 && this.projects.some(p => p.id === savedCurrentId)) {
+        this.currentProjectId = savedCurrentId;
+      } else if (this.projects.length > 0) {
+        const firstProject = this.projects[0];
+        if (firstProject) {
+          this.currentProjectId = firstProject.id;
+        }
+      }
     },
 
     saveAllProjects() {
       localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(this.projects));
+      if (this.currentProjectId) {
+        localStorage.setItem(CURRENT_PROJECT_ID_KEY, this.currentProjectId);
+      }
     },
 
     createProject(name: string = '未命名项目') {
-      const firstSceneId = uuidv4();
-      const newProject: Project = {
+      const template = cloneDeep(defaultProjectTemplate) as any;
+      
+      // 映射场景，保持 JSON 中的原始配置
+      const scenes: Scene[] = (template.scenes || []).map((scene: any) => ({
+        ...scene,
         id: uuidv4(),
-        name,
-        scenes: [{
-          id: firstSceneId,
-          name: '画布 1',
+        nodes: (scene.nodes || []) as EditorNode[],
+        annotations: (scene.annotations || []) as Annotation[],
+        config: { ...scene.config } // 直接使用 JSON 中的 config
+      }));
+
+      if (scenes.length === 0) {
+        scenes.push({
+          id: uuidv4(),
+          name: '主画布',
           nodes: [],
           config: { ...DEFAULT_CONFIG },
           annotations: [],
-        }],
-        currentSceneId: firstSceneId,
+          x: 0,
+          y: 0,
+        });
+      }
+
+      const firstScene = scenes[0];
+      const newProjectId = uuidv4();
+      const newProject: Project = {
+        ...template,
+        name: name || template.name || '未命名项目',
+        id: newProjectId,
         updatedAt: Date.now(),
+        scenes: scenes,
+        currentSceneId: firstScene ? firstScene.id : ''
       };
+      
       this.projects.unshift(newProject);
+      
+      // 核心修复：创建后立即初始化编辑器状态，确保跳转后数据已就绪
+      this.resetEditorState();
+      this.currentProjectId = newProjectId;
+      this.scenes = cloneDeep(scenes);
+      if (firstScene) {
+        this.switchScene(firstScene.id);
+      }
       this.saveAllProjects();
-      return newProject.id;
+      
+      return newProjectId;
     },
 
     openProject(id: string) {
+      // 如果项目列表为空，尝试初始化
+      if (this.projects.length === 0) {
+        this.initProjects();
+      }
+
       const project = this.projects.find(p => p.id === id);
-      if (!project) return;
+      if (!project) {
+        console.warn(`Project with id ${id} not found`);
+        return;
+      }
 
       this.resetEditorState(); // 加载前先重置所有编辑器状态
       this.currentProjectId = id;
@@ -203,12 +310,16 @@ export const useEditorStore = defineStore('editor', {
       this.currentProjectId = '';
       this.scenes = [];
       this.currentSceneId = '';
+      this.selectedSceneIds = [];
       this.nodes = [];
       this.config = { ...DEFAULT_CONFIG };
       this.annotations = [];
       this.selectedNodeIds = [];
       this.history = [];
       this.historyIndex = -1;
+      this.draggedComponent = null;
+      this.clipboard = [];
+      this.sceneClipboard = null;
       this.zoom = 0.5;
       this.offset = { x: 0, y: 0 };
     },
@@ -430,6 +541,16 @@ export const useEditorStore = defineStore('editor', {
       }
     },
 
+    updateSelectedScenesConfig(config: Partial<ProjectConfig>) {
+      if (this.selectedSceneIds.length === 0) return;
+      this.selectedSceneIds.forEach(id => {
+        const scene = this.scenes.find(s => s.id === id);
+        if (scene) {
+          scene.config = { ...scene.config, ...config };
+        }
+      });
+    },
+
     updateSelectedScenesPosition(dx: number, dy: number) {
       this.selectedSceneIds.forEach(id => {
         const scene = this.scenes.find(s => s.id === id);
@@ -464,7 +585,7 @@ export const useEditorStore = defineStore('editor', {
     },
 
     switchScene(id: string) {
-      if (this.currentSceneId === id) return;
+      if (this.currentSceneId === id && this.nodes.length > 0) return;
 
       this.syncCurrentScene();
 
@@ -844,21 +965,56 @@ export const useEditorStore = defineStore('editor', {
       this.clipboard = cloneDeep(this.selectedNodes);
     },
 
+    cutNodes() {
+      if (this.selectedNodeIds.length === 0) return;
+      this.copyNodes();
+      this.deleteSelectedNodes();
+    },
+
     pasteNodes() {
-      if (this.clipboard.length === 0) return;
+      if (!this.clipboard || this.clipboard.length === 0) return;
       
-      const newNodes = cloneDeep(this.clipboard).map(node => ({
-        ...node,
-        id: uuidv4(),
-        style: {
-          ...node.style,
-          left: `${parseValue(node.style.left) + 20}px`,
-          top: `${parseValue(node.style.top) + 20}px`,
+      const idMap = new Map<string, string>();
+      this.clipboard.forEach(node => {
+        idMap.set(node.id, uuidv4());
+      });
+
+      const newNodes = this.clipboard.map(node => {
+        const newNode = cloneDeep(node);
+        newNode.id = idMap.get(node.id)!;
+        if (node.parentId && idMap.has(node.parentId)) {
+          newNode.parentId = idMap.get(node.parentId);
         }
-      }));
+        
+        newNode.style = {
+          ...newNode.style,
+          left: `${parseValue(newNode.style.left) + 20}px`,
+          top: `${parseValue(newNode.style.top) + 20}px`,
+        };
+        return newNode;
+      });
 
       this.nodes.push(...newNodes);
       this.selectedNodeIds = newNodes.map(n => n.id);
+      this.saveHistory();
+    },
+
+    // --- 层级操作 ---
+    bringToFront() {
+      if (this.selectedNodeIds.length === 0) return;
+      // 在当前 nodes 数组中移动。
+      // 先取出选中的，再把剩下的过滤出来，最后把选中的放后面
+      const selected = this.nodes.filter(n => this.selectedNodeIds.includes(n.id));
+      const remaining = this.nodes.filter(n => !this.selectedNodeIds.includes(n.id));
+      this.nodes = [...remaining, ...selected];
+      this.saveHistory();
+    },
+
+    sendToBack() {
+      if (this.selectedNodeIds.length === 0) return;
+      const selected = this.nodes.filter(n => this.selectedNodeIds.includes(n.id));
+      const remaining = this.nodes.filter(n => !this.selectedNodeIds.includes(n.id));
+      this.nodes = [...selected, ...remaining];
       this.saveHistory();
     },
 
