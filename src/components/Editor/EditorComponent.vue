@@ -243,7 +243,6 @@
 
 <script setup lang="ts">
 import { computed, getCurrentInstance } from 'vue';
-  import * as ElementPlusIconsVue from '@element-plus/icons-vue';
 
 const propsDef = defineProps<{
   type: string;

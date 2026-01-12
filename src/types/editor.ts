@@ -52,6 +52,10 @@ export interface Scene {
   nodes: EditorNode[];
   config: ProjectConfig;
   annotations: Annotation[];
+  guides?: {
+    vertical: number[];
+    horizontal: number[];
+  };
   x?: number; // 画布在工作区的 X 坐标
   y?: number; // 画布在工作区的 Y 坐标
 }

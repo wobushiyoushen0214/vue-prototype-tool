@@ -22,6 +22,75 @@
             <el-tooltip content="垂直居中" :hide-after="0"><el-button text @click="handleAlign('middle', $event)"><el-icon><rank /></el-icon></el-button></el-tooltip>
             <el-tooltip content="底对齐" :hide-after="0"><el-button text @click="handleAlign('bottom', $event)"><el-icon><bottom /></el-icon></el-button></el-tooltip>
             <el-divider direction="vertical" />
+            <el-popover placement="bottom" trigger="click" width="280">
+              <template #reference>
+                <el-tooltip content="吸附设置" :hide-after="0">
+                  <el-button text><el-icon><setting /></el-icon></el-button>
+                </el-tooltip>
+              </template>
+              <div class="snap-panel">
+                <div class="snap-row">
+                  <span class="snap-label">吸附</span>
+                  <el-switch
+                    :model-value="store.snap.enabled"
+                    @update:model-value="store.updateSnapSettings({ enabled: $event })"
+                  />
+                </div>
+                <div class="snap-row">
+                  <span class="snap-label">阈值</span>
+                  <el-input-number
+                    :model-value="store.snap.threshold"
+                    @update:model-value="store.updateSnapSettings({ threshold: $event ?? 10 })"
+                    :min="1"
+                    :max="40"
+                    controls-position="right"
+                    size="small"
+                    style="width: 132px"
+                  />
+                </div>
+                <div class="snap-row">
+                  <span class="snap-label">辅助线数值</span>
+                  <el-switch
+                    :model-value="store.snap.showSnapDigits"
+                    @update:model-value="store.updateSnapSettings({ showSnapDigits: $event })"
+                  />
+                </div>
+                <div class="snap-row">
+                  <span class="snap-label">显示间距提示</span>
+                  <el-switch
+                    :model-value="store.snap.showDistanceGuides"
+                    @update:model-value="store.updateSnapSettings({ showDistanceGuides: $event })"
+                  />
+                </div>
+                <div class="snap-row">
+                  <span class="snap-label">间距基准</span>
+                  <el-input-number
+                    :model-value="store.snap.gapPx"
+                    @update:model-value="store.updateSnapSettings({ gapPx: $event ?? 8 })"
+                    :min="0"
+                    :max="200"
+                    controls-position="right"
+                    size="small"
+                    style="width: 132px"
+                  />
+                </div>
+                <div class="snap-divider"></div>
+                <div class="snap-row">
+                  <span class="snap-label">标尺</span>
+                  <el-switch
+                    :model-value="store.view.showRulers"
+                    @update:model-value="store.updateViewSettings({ showRulers: $event })"
+                  />
+                </div>
+                <div class="snap-row">
+                  <span class="snap-label">参考线</span>
+                  <el-switch
+                    :model-value="store.view.showGuides"
+                    @update:model-value="store.updateViewSettings({ showGuides: $event })"
+                  />
+                </div>
+              </div>
+            </el-popover>
           </div>
 
           <div class="mode-switch-container">
@@ -163,7 +232,7 @@ import Sidebar from '@/components/Editor/Sidebar.vue';
 import EditorCanvas from '@/components/Editor/EditorCanvas.vue';
 import PropertyPanel from '@/components/Editor/PropertyPanel.vue';
 import { useEditorStore } from '@/store/editor';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { generateVueCode } from '@/utils/code-generator';
 import { throttle } from 'lodash-es';
 import {
@@ -173,6 +242,7 @@ import {
   Top,
   Rank,
   Bottom,
+  Setting,
   RefreshLeft,
   RefreshRight,
   Plus,
@@ -259,17 +329,6 @@ const handleCanvasPresetChange = (key: string) => {
   if (!preset) return;
   store.updateConfig({ width: preset.width, height: preset.height });
   store.saveHistory();
-};
-
-const handleNewScene = () => {
-  ElMessageBox.confirm('确定要新建一个场景吗？当前场景的数据会被保留。', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'info'
-  }).then(() => {
-    store.addScene('');
-    ElMessage.success('已新建场景');
-  }).catch(() => {});
 };
 
 const handleCopyCode = async () => {
@@ -392,6 +451,14 @@ const handleKeyDown = (e: KeyboardEvent) => {
   if ((e.ctrlKey || e.metaKey) && e.shiftKey && key === 'h') {
     e.preventDefault();
     store.toggleSelectedHidden();
+  }
+  if ((e.ctrlKey || e.metaKey) && e.altKey && key === 'h') {
+    e.preventDefault();
+    store.distributeSelectedNodes('horizontal');
+  }
+  if ((e.ctrlKey || e.metaKey) && e.altKey && key === 'v') {
+    e.preventDefault();
+    store.distributeSelectedNodes('vertical');
   }
   // 复制 Ctrl+C
   if ((e.ctrlKey || e.metaKey) && key === 'c') {
@@ -649,6 +716,32 @@ const handleResetZoom = () => {
   border: 1px solid var(--border-color-light);
   border-radius: 999px;
   padding: 2px 4px;
+}
+
+.snap-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px 2px;
+}
+
+.snap-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.snap-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.snap-divider {
+  height: 1px;
+  background: var(--border-color-light);
+  margin: 2px 0;
 }
 
 /* 代码预览弹窗样式 */

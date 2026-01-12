@@ -7,8 +7,6 @@
 -->
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import EditorLayout from './views/EditorLayout.vue'
-import ProjectList from './views/ProjectList.vue'
 import { useEditorStore } from './store/editor'
 
 const store = useEditorStore()

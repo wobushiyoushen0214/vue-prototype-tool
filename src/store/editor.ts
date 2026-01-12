@@ -12,6 +12,11 @@ const parseValue = (val: string | number) => {
   return parseFloat(val) || 0;
 };
 
+const toRoundedPx = (val: any) => {
+  const n = typeof val === 'number' ? val : Number.parseFloat(String(val));
+  return `${Math.round(Number.isFinite(n) ? n : 0)}px`;
+};
+
 const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
   width: 750,
   height: 1334,
@@ -120,6 +125,19 @@ export const useEditorStore = defineStore('editor', {
     sceneClipboard: null as Scene[] | null,
     mode: 'edit' as EditorMode,
     annotations: [] as Annotation[],
+
+    canvasAutoExpand: false,
+    snap: {
+      enabled: true,
+      threshold: 10,
+      showSnapDigits: true,
+      showDistanceGuides: true,
+      gapPx: 8,
+    },
+    view: {
+      showRulers: true,
+      showGuides: true,
+    },
   }),
 
   getters: {
@@ -158,7 +176,7 @@ export const useEditorStore = defineStore('editor', {
       const id = state.selectedNodeIds[0];
       return state.nodes.find(n => n.id === id) || null;
     },
-    getSceneTreeNodes: (state) => {
+    getSceneTreeNodes: (_state) => {
       return (nodes: EditorNode[]) => {
         const nodeMap = new Map<string, EditorNode>();
         const rootNodes: EditorNode[] = [];
@@ -295,6 +313,7 @@ export const useEditorStore = defineStore('editor', {
       this.scenes.forEach((scene, index) => {
         if (scene.x === undefined) scene.x = index * (scene.config.width + 100);
         if (scene.y === undefined) scene.y = 0;
+        if (!scene.guides) scene.guides = { vertical: [], horizontal: [] };
       });
 
       // 恢复到上次编辑的场景或第一个场景
@@ -322,6 +341,18 @@ export const useEditorStore = defineStore('editor', {
       this.sceneClipboard = null;
       this.zoom = 0.5;
       this.offset = { x: 0, y: 0 };
+      this.canvasAutoExpand = false;
+      this.snap = {
+        enabled: true,
+        threshold: 10,
+        showSnapDigits: true,
+        showDistanceGuides: true,
+        gapPx: 8,
+      };
+      this.view = {
+        showRulers: true,
+        showGuides: true,
+      };
     },
 
     deleteProject(id: string) {
@@ -383,6 +414,7 @@ export const useEditorStore = defineStore('editor', {
         nodes: [],
         config: config ? cloneDeep(config) : { ...DEFAULT_CONFIG },
         annotations: [],
+        guides: { vertical: [], horizontal: [] },
         x: newX,
         y: newY,
       };
@@ -536,8 +568,8 @@ export const useEditorStore = defineStore('editor', {
     updateScenePosition(sceneId: string, x: number, y: number) {
       const scene = this.scenes.find(s => s.id === sceneId);
       if (scene) {
-        scene.x = x;
-        scene.y = y;
+        scene.x = Math.round(x);
+        scene.y = Math.round(y);
       }
     },
 
@@ -555,8 +587,8 @@ export const useEditorStore = defineStore('editor', {
       this.selectedSceneIds.forEach(id => {
         const scene = this.scenes.find(s => s.id === id);
         if (scene) {
-          scene.x = (scene.x || 0) + dx;
-          scene.y = (scene.y || 0) + dy;
+          scene.x = Math.round((scene.x || 0) + dx);
+          scene.y = Math.round((scene.y || 0) + dy);
         }
       });
     },
@@ -651,8 +683,8 @@ export const useEditorStore = defineStore('editor', {
 
       if (position) {
         newNode.style.position = 'absolute';
-        newNode.style.left = `${position.x}px`;
-        newNode.style.top = `${position.y}px`;
+        newNode.style.left = `${Math.round(position.x)}px`;
+        newNode.style.top = `${Math.round(position.y)}px`;
       }
 
       this.nodes.push(newNode);
@@ -682,7 +714,10 @@ export const useEditorStore = defineStore('editor', {
     updateNodeStyle(id: string, style: Record<string, any>, skipHistory = false) {
       const node = this.nodes.find(n => n.id === id);
       if (node) {
-        node.style = { ...node.style, ...style };
+        const nextStyle = { ...node.style, ...style };
+        if (Object.prototype.hasOwnProperty.call(style, 'left')) nextStyle.left = toRoundedPx(style.left);
+        if (Object.prototype.hasOwnProperty.call(style, 'top')) nextStyle.top = toRoundedPx(style.top);
+        node.style = nextStyle;
         if (!skipHistory && !this.isBatching) {
           this.saveHistory();
         }
@@ -690,6 +725,7 @@ export const useEditorStore = defineStore('editor', {
     },
     
     checkAndExpandCanvas(rect: { left: number; top: number; right: number; bottom: number }) {
+      if (!this.canvasAutoExpand) return;
       if (this.config.lockSize) return;
 
       let newWidth = this.config.width;
@@ -736,8 +772,8 @@ export const useEditorStore = defineStore('editor', {
         if (shiftX > 0 || shiftY > 0) {
           this.nodes.forEach(node => {
             if (node.parentId) return;
-            node.style.left = `${parseValue(node.style.left) + shiftX}px`;
-            node.style.top = `${parseValue(node.style.top) + shiftY}px`;
+            node.style.left = `${Math.round(parseValue(node.style.left) + shiftX)}px`;
+            node.style.top = `${Math.round(parseValue(node.style.top) + shiftY)}px`;
           });
           
           // 同时调整视口偏移，以保持视觉平稳 (反向平移)
@@ -758,8 +794,65 @@ export const useEditorStore = defineStore('editor', {
        const right = left + parseValue(node.style.width);
        const bottom = top + parseValue(node.style.height);
        this.checkAndExpandCanvas({ left, top, right, bottom });
+     },
+
+    setSelectedNodeIds(ids: string[]) {
+      this.selectedNodeIds = ids;
     },
-    
+
+    updateSnapSettings(patch: Partial<{ enabled: boolean; threshold: number; showSnapDigits: boolean; showDistanceGuides: boolean; gapPx: number }>) {
+      this.snap = { ...this.snap, ...patch };
+    },
+
+    updateViewSettings(patch: Partial<{ showRulers: boolean; showGuides: boolean }>) {
+      this.view = { ...this.view, ...patch };
+    },
+
+    addGuide(sceneId: string, direction: 'vertical' | 'horizontal', pos: number) {
+      const scene = this.scenes.find(s => s.id === sceneId);
+      if (!scene) return;
+      if (!scene.guides) scene.guides = { vertical: [], horizontal: [] };
+      const list = direction === 'vertical' ? scene.guides.vertical : scene.guides.horizontal;
+      const rounded = Math.round(pos);
+      if (rounded < 0) return;
+      if (direction === 'vertical' && rounded > scene.config.width) return;
+      if (direction === 'horizontal' && rounded > scene.config.height) return;
+      if (list.includes(rounded)) return;
+      list.push(rounded);
+      list.sort((a, b) => a - b);
+      this.syncCurrentProject();
+    },
+
+    updateGuide(sceneId: string, direction: 'vertical' | 'horizontal', from: number, to: number) {
+      const scene = this.scenes.find(s => s.id === sceneId);
+      if (!scene || !scene.guides) return;
+      const list = direction === 'vertical' ? scene.guides.vertical : scene.guides.horizontal;
+      const idx = list.indexOf(from);
+      if (idx < 0) return;
+      const rounded = Math.round(to);
+      const clamped =
+        direction === 'vertical'
+          ? Math.max(0, Math.min(scene.config.width, rounded))
+          : Math.max(0, Math.min(scene.config.height, rounded));
+      list[idx] = clamped;
+      const unique = Array.from(new Set(list));
+      unique.sort((a, b) => a - b);
+      if (direction === 'vertical') scene.guides.vertical = unique;
+      else scene.guides.horizontal = unique;
+      this.syncCurrentProject();
+    },
+
+    removeGuide(sceneId: string, direction: 'vertical' | 'horizontal', pos: number) {
+      const scene = this.scenes.find(s => s.id === sceneId);
+      if (!scene || !scene.guides) return;
+      if (direction === 'vertical') {
+        scene.guides.vertical = scene.guides.vertical.filter(v => v !== pos);
+      } else {
+        scene.guides.horizontal = scene.guides.horizontal.filter(v => v !== pos);
+      }
+      this.syncCurrentProject();
+    },
+
     updateNodeProps(id: string, props: Record<string, any>) {
       const node = this.nodes.find(n => n.id === id);
       if (node) {
@@ -857,27 +950,46 @@ export const useEditorStore = defineStore('editor', {
     
     alignSelectedNodes(type: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') {
       const selected = this.selectedNodes;
-      if (selected.length < 2) return;
+      if (selected.length === 0) return;
+
+      if (selected.length === 1) {
+        const node = selected[0];
+        if (!node) return;
+        const parent = node.parentId ? this.nodes.find(n => n.id === node.parentId) : undefined;
+        const containerWidth = parent ? parseValue(parent.style.width) : this.config.width;
+        const containerHeight = parent ? parseValue(parent.style.height) : this.config.height;
+        const nodeWidth = parseValue(node.style.width);
+        const nodeHeight = parseValue(node.style.height);
+
+        if (type === 'left') node.style.left = `0px`;
+        if (type === 'right') node.style.left = `${Math.round(containerWidth - nodeWidth)}px`;
+        if (type === 'center') node.style.left = `${Math.round((containerWidth - nodeWidth) / 2)}px`;
+        if (type === 'top') node.style.top = `0px`;
+        if (type === 'bottom') node.style.top = `${Math.round(containerHeight - nodeHeight)}px`;
+        if (type === 'middle') node.style.top = `${Math.round((containerHeight - nodeHeight) / 2)}px`;
+        this.saveHistory();
+        return;
+      }
       
       let targetValue = 0;
       
       switch (type) {
         case 'left':
           targetValue = Math.min(...selected.map(n => parseValue(n.style.left)));
-          selected.forEach(n => n.style.left = `${targetValue}px`);
+          selected.forEach(n => n.style.left = `${Math.round(targetValue)}px`);
           break;
         case 'right':
            // 对齐到最右侧元素的右边缘
            const maxRight = Math.max(...selected.map(n => parseValue(n.style.left) + parseValue(n.style.width)));
-           selected.forEach(n => n.style.left = `${maxRight - parseValue(n.style.width)}px`);
+           selected.forEach(n => n.style.left = `${Math.round(maxRight - parseValue(n.style.width))}px`);
            break;
         case 'top':
           targetValue = Math.min(...selected.map(n => parseValue(n.style.top)));
-          selected.forEach(n => n.style.top = `${targetValue}px`);
+          selected.forEach(n => n.style.top = `${Math.round(targetValue)}px`);
           break;
         case 'bottom':
           const maxBottom = Math.max(...selected.map(n => parseValue(n.style.top) + parseValue(n.style.height)));
-          selected.forEach(n => n.style.top = `${maxBottom - parseValue(n.style.height)}px`);
+          selected.forEach(n => n.style.top = `${Math.round(maxBottom - parseValue(n.style.height))}px`);
           break;
         case 'center': // 水平居中
            // 计算所有元素的中心点平均值，或者以最左和最右的中点为准
@@ -885,15 +997,50 @@ export const useEditorStore = defineStore('editor', {
            const minLeft = Math.min(...selected.map(n => parseValue(n.style.left)));
            const maxRightBound = Math.max(...selected.map(n => parseValue(n.style.left) + parseValue(n.style.width)));
            const centerX = (minLeft + maxRightBound) / 2;
-           selected.forEach(n => n.style.left = `${centerX - parseValue(n.style.width) / 2}px`);
+           selected.forEach(n => n.style.left = `${Math.round(centerX - parseValue(n.style.width) / 2)}px`);
            break;
         case 'middle': // 垂直居中
            const minTop = Math.min(...selected.map(n => parseValue(n.style.top)));
            const maxBottomBound = Math.max(...selected.map(n => parseValue(n.style.top) + parseValue(n.style.height)));
            const centerY = (minTop + maxBottomBound) / 2;
-           selected.forEach(n => n.style.top = `${centerY - parseValue(n.style.height) / 2}px`);
+           selected.forEach(n => n.style.top = `${Math.round(centerY - parseValue(n.style.height) / 2)}px`);
            break;
       }
+      this.saveHistory();
+    },
+
+    distributeSelectedNodes(direction: 'horizontal' | 'vertical') {
+      const selected = this.selectedNodes;
+      if (selected.length < 3) return;
+
+      if (direction === 'horizontal') {
+        const sorted = [...selected].sort((a, b) => parseValue(a.style.left) - parseValue(b.style.left));
+        const minLeft = Math.min(...sorted.map(n => parseValue(n.style.left)));
+        const maxRight = Math.max(...sorted.map(n => parseValue(n.style.left) + parseValue(n.style.width)));
+        const totalWidth = sorted.reduce((sum, n) => sum + parseValue(n.style.width), 0);
+        const gap = (maxRight - minLeft - totalWidth) / (sorted.length - 1);
+
+        let acc = 0;
+        sorted.forEach((n, idx) => {
+          const pos = minLeft + acc + gap * idx;
+          n.style.left = `${Math.round(pos)}px`;
+          acc += parseValue(n.style.width);
+        });
+      } else {
+        const sorted = [...selected].sort((a, b) => parseValue(a.style.top) - parseValue(b.style.top));
+        const minTop = Math.min(...sorted.map(n => parseValue(n.style.top)));
+        const maxBottom = Math.max(...sorted.map(n => parseValue(n.style.top) + parseValue(n.style.height)));
+        const totalHeight = sorted.reduce((sum, n) => sum + parseValue(n.style.height), 0);
+        const gap = (maxBottom - minTop - totalHeight) / (sorted.length - 1);
+
+        let acc = 0;
+        sorted.forEach((n, idx) => {
+          const pos = minTop + acc + gap * idx;
+          n.style.top = `${Math.round(pos)}px`;
+          acc += parseValue(n.style.height);
+        });
+      }
+
       this.saveHistory();
     },
 
@@ -988,8 +1135,8 @@ export const useEditorStore = defineStore('editor', {
         
         newNode.style = {
           ...newNode.style,
-          left: `${parseValue(newNode.style.left) + 20}px`,
-          top: `${parseValue(newNode.style.top) + 20}px`,
+          left: `${Math.round(parseValue(newNode.style.left) + 20)}px`,
+          top: `${Math.round(parseValue(newNode.style.top) + 20)}px`,
         };
         return newNode;
       });
@@ -1162,6 +1309,11 @@ export const useEditorStore = defineStore('editor', {
       // 处理多场景导入 (v2)
       if (parsed?.version === 2 && Array.isArray(parsed.scenes)) {
         this.scenes = cloneDeep(parsed.scenes);
+        this.scenes.forEach((scene, index) => {
+          if (scene.x === undefined) scene.x = index * (scene.config.width + 100);
+          if (scene.y === undefined) scene.y = 0;
+          if (!scene.guides) scene.guides = { vertical: [], horizontal: [] };
+        });
         const targetId = parsed.currentSceneId || this.scenes[0]?.id;
         
         // 切换到目标场景
@@ -1201,6 +1353,9 @@ export const useEditorStore = defineStore('editor', {
         nodes: cloneDeep(this.nodes),
         config: cloneDeep(this.config),
         annotations: cloneDeep(this.annotations || []),
+        guides: { vertical: [], horizontal: [] },
+        x: 0,
+        y: 0,
       }];
       this.currentSceneId = sceneId;
 

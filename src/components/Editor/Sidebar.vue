@@ -184,7 +184,7 @@
                 @dragend="onLayerDragEnd"
                 @dragover.prevent
                 @drop.prevent="onLayerDrop(row.node.id)"
-                @click="handleSelectLayer(row.node.id)"
+                @click="handleSelectLayer(row.node.id, $event)"
               >
                 <span class="layer-icon" :style="{ paddingLeft: `${row.depth * 14}px` }">
                   <el-icon><component :is="getIcon(row.node.type)" /></el-icon>
@@ -300,7 +300,6 @@ import {
   Plus,
   MoreFilled
 } from '@element-plus/icons-vue';
-import { cloneDeep } from 'lodash-es';
 
 const store = useEditorStore();
 const mainTab = ref('components');
@@ -673,15 +672,24 @@ const handleUpload = (file: any) => {
   return false; // Prevent upload
 };
 
-const handleSelectLayer = (id: string) => {
-  store.selectNode(id);
+const handleSelectLayer = (id: string, e: MouseEvent) => {
+  const multi = e.shiftKey || e.metaKey || e.ctrlKey;
+  store.selectNode(id, multi);
 };
 
 const toggleHidden = (id: string) => {
+  if (store.selectedNodeIds.includes(id)) {
+    store.toggleSelectedHidden();
+    return;
+  }
   store.toggleNodeHidden(id);
 };
 
 const toggleLocked = (id: string) => {
+  if (store.selectedNodeIds.includes(id)) {
+    store.toggleSelectedLocked();
+    return;
+  }
   store.toggleNodeLocked(id);
 };
 

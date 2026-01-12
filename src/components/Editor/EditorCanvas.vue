@@ -6,6 +6,32 @@
        @wheel="handleWheel"
        @contextmenu.prevent="handleContextMenu($event)"
   >
+    <template v-if="store.mode === 'edit' && store.view.showRulers">
+      <div class="ruler-corner"></div>
+      <div class="ruler ruler-x" @mousedown.stop="startCreateGuide('vertical', $event)">
+        <div
+          v-for="t in xTicks"
+          :key="t.value"
+          class="ruler-tick"
+          :style="{ left: `${t.pos}px` }"
+        >
+          <div class="ruler-tick-line"></div>
+          <span class="ruler-tick-label">{{ t.label }}</span>
+        </div>
+      </div>
+      <div class="ruler ruler-y" @mousedown.stop="startCreateGuide('horizontal', $event)">
+        <div
+          v-for="t in yTicks"
+          :key="t.value"
+          class="ruler-tick ruler-tick-y"
+          :style="{ top: `${t.pos}px` }"
+        >
+          <div class="ruler-tick-line"></div>
+          <span class="ruler-tick-label">{{ t.label }}</span>
+        </div>
+      </div>
+    </template>
+
     <div 
       class="viewport"
       :style="{
@@ -90,16 +116,16 @@
           :draggable="true"
           :resizable="true"
           :rotatable="true"
-          :snappable="true"
+          :snappable="store.snap.enabled"
           :snapCenter="true"
           :snapHorizontal="true"
           :snapVertical="true"
           :snapElement="true"
           :elementGuidelines="elementGuidelines"
-          :snapThreshold="10"
-          :isDisplaySnapDigit="true"
-          :verticalGuidelines="[0, scene.config.width]"
-          :horizontalGuidelines="[0, scene.config.height]"
+          :snapThreshold="store.snap.threshold"
+          :isDisplaySnapDigit="store.snap.showSnapDigits"
+          :verticalGuidelines="sceneVerticalGuidelines"
+          :horizontalGuidelines="sceneHorizontalGuidelines"
           :bounds="null"
           :zoom="store.zoom"
           @drag="onDrag"
@@ -118,15 +144,54 @@
       </div>
     </div>
 
+    <template v-if="store.mode === 'edit' && store.view.showGuides">
+      <template v-for="g in renderedGuides.vertical" :key="`v-${g.pos}`">
+        <div
+          class="canvas-guide canvas-guide-vertical"
+          :style="g.style"
+          @mousedown.stop="startDragGuide('vertical', g.pos, $event)"
+          @contextmenu.prevent.stop="handleContextMenu($event, store.currentSceneId, '', { direction: 'vertical', pos: g.pos })"
+        ></div>
+      </template>
+      <template v-for="g in renderedGuides.horizontal" :key="`h-${g.pos}`">
+        <div
+          class="canvas-guide canvas-guide-horizontal"
+          :style="g.style"
+          @mousedown.stop="startDragGuide('horizontal', g.pos, $event)"
+          @contextmenu.prevent.stop="handleContextMenu($event, store.currentSceneId, '', { direction: 'horizontal', pos: g.pos })"
+        ></div>
+      </template>
+      <div
+        v-if="creatingGuide && creatingGuidePos !== null"
+        class="canvas-guide-preview"
+        :class="creatingGuide.direction === 'vertical' ? 'is-vertical' : 'is-horizontal'"
+        :style="creatingGuideStyle"
+      ></div>
+      <div
+        v-if="draggingGuide && draggingGuidePos !== null"
+        class="canvas-guide-preview"
+        :class="draggingGuide.direction === 'vertical' ? 'is-vertical' : 'is-horizontal'"
+        :style="draggingGuideStyle"
+      ></div>
+    </template>
+
     <!-- 框选矩形 -->
     <div 
       v-if="isSelecting" 
       class="selection-box"
       :style="selectionBoxStyle"
     ></div>
-    <template v-if="distanceGuides.length">
+    <template v-if="store.snap.showDistanceGuides && distanceGuides.length">
       <template v-for="(g, idx) in distanceGuides" :key="idx">
-        <div class="distance-guide-line" :style="g.lineStyle"></div>
+        <div class="distance-guide-line" :class="`is-${g.orientation}`" :style="g.lineStyle"></div>
+        <template v-if="g.caps && g.caps.length">
+          <div
+            v-for="(c, cidx) in g.caps"
+            :key="`${idx}-${cidx}`"
+            class="distance-guide-cap"
+            :style="c.style"
+          ></div>
+        </template>
         <div class="distance-guide-label" :style="g.labelStyle">{{ g.label }}</div>
       </template>
     </template>
@@ -164,6 +229,13 @@
         <div class="menu-item danger" @click="handleContextAction('delete-node')">
           <el-icon><Delete /></el-icon>
           <span>删除组件</span>
+        </div>
+      </template>
+      <template v-else-if="contextMenu.guide">
+        <div class="menu-header">参考线</div>
+        <div class="menu-item danger" @click="handleContextAction('delete-guide')">
+          <el-icon><Delete /></el-icon>
+          <span>删除参考线</span>
         </div>
       </template>
       <template v-else-if="contextMenu.sceneId">
@@ -234,6 +306,17 @@ const targetElement = ref<HTMLElement | null>(null);
 const targetElements = ref<HTMLElement[]>([]);
 const lockedSelected = ref(false);
 const centeredProjectId = ref<string>('');
+const wrapperRect = ref<DOMRect | null>(null);
+const RULER_SIZE = 20;
+
+const activeScene = computed(() => {
+  return store.scenes.find(s => s.id === store.currentSceneId) || null;
+});
+
+const updateWrapperRect = () => {
+  if (!wrapperRef.value) return;
+  wrapperRect.value = wrapperRef.value.getBoundingClientRect();
+};
 
 const centerViewportOnCurrentScene = () => {
   const wrapper = wrapperRef.value;
@@ -264,8 +347,275 @@ watch(
   { immediate: true }
 );
 
-type DistanceGuide = { lineStyle: Record<string, string>; labelStyle: Record<string, string>; label: string };
+type DistanceGuide = {
+  orientation: 'horizontal' | 'vertical';
+  lineStyle: Record<string, string>;
+  labelStyle: Record<string, string>;
+  label: string;
+  caps?: { style: Record<string, string> }[];
+};
 const distanceGuides = ref<DistanceGuide[]>([]);
+
+type Tick = { value: number; pos: number; label: number };
+
+const pickRulerStep = (zoom: number) => {
+  const candidates = [5, 10, 20, 50, 100, 200, 500];
+  const minPx = 50;
+  for (const c of candidates) {
+    if (c * zoom >= minPx) return c;
+  }
+  return 500;
+};
+
+const wrapperToSceneX = (localX: number) => {
+  const scene = activeScene.value;
+  if (!scene) return 0;
+  const originX = scene.x ?? 0;
+  return localX / store.zoom - store.offset.x - originX;
+};
+
+const wrapperToSceneY = (localY: number) => {
+  const scene = activeScene.value;
+  if (!scene) return 0;
+  const originY = scene.y ?? 0;
+  return localY / store.zoom - store.offset.y - originY;
+};
+
+const sceneToWrapperX = (sceneX: number) => {
+  const scene = activeScene.value;
+  if (!scene) return 0;
+  const originX = scene.x ?? 0;
+  return (sceneX + originX + store.offset.x) * store.zoom;
+};
+
+const sceneToWrapperY = (sceneY: number) => {
+  const scene = activeScene.value;
+  if (!scene) return 0;
+  const originY = scene.y ?? 0;
+  return (sceneY + originY + store.offset.y) * store.zoom;
+};
+
+const xTicks = computed<Tick[]>(() => {
+  const rect = wrapperRect.value;
+  const scene = activeScene.value;
+  if (!rect || !scene) return [];
+  const step = pickRulerStep(store.zoom);
+
+  const startVal = Math.floor(wrapperToSceneX(0) / step) * step - step * 2;
+  const endVal = Math.ceil(wrapperToSceneX(rect.width) / step) * step + step * 2;
+
+  const ticks: Tick[] = [];
+  for (let v = startVal; v <= endVal; v += step) {
+    ticks.push({
+      value: v,
+      pos: sceneToWrapperX(v) - RULER_SIZE,
+      label: Math.round(v),
+    });
+  }
+  return ticks;
+});
+
+const yTicks = computed<Tick[]>(() => {
+  const rect = wrapperRect.value;
+  const scene = activeScene.value;
+  if (!rect || !scene) return [];
+  const step = pickRulerStep(store.zoom);
+
+  const startVal = Math.floor(wrapperToSceneY(0) / step) * step - step * 2;
+  const endVal = Math.ceil(wrapperToSceneY(rect.height) / step) * step + step * 2;
+
+  const ticks: Tick[] = [];
+  for (let v = startVal; v <= endVal; v += step) {
+    ticks.push({
+      value: v,
+      pos: sceneToWrapperY(v) - RULER_SIZE,
+      label: Math.round(v),
+    });
+  }
+  return ticks;
+});
+
+const sceneVerticalGuidelines = computed(() => {
+  const scene = activeScene.value;
+  if (!scene) return [];
+  const extra = scene.guides?.vertical ?? [];
+  const set = new Set<number>([0, scene.config.width, ...extra]);
+  return Array.from(set).sort((a, b) => a - b);
+});
+
+const sceneHorizontalGuidelines = computed(() => {
+  const scene = activeScene.value;
+  if (!scene) return [];
+  const extra = scene.guides?.horizontal ?? [];
+  const set = new Set<number>([0, scene.config.height, ...extra]);
+  return Array.from(set).sort((a, b) => a - b);
+});
+
+const renderedGuides = computed(() => {
+  const rect = wrapperRect.value;
+  const scene = activeScene.value;
+  if (!rect || !scene) return { vertical: [] as { pos: number; style: Record<string, string> }[], horizontal: [] as { pos: number; style: Record<string, string> }[] };
+  const sx = sceneToWrapperX(0);
+  const sy = sceneToWrapperY(0);
+  const sw = scene.config.width * store.zoom;
+  const sh = scene.config.height * store.zoom;
+  const vertical = (scene.guides?.vertical ?? []).map(pos => ({
+    pos,
+    style: {
+      left: `${sx + pos * store.zoom}px`,
+      top: `${sy}px`,
+      height: `${sh}px`,
+      width: `calc(1.5px / var(--zoom))`,
+    },
+  }));
+  const horizontal = (scene.guides?.horizontal ?? []).map(pos => ({
+    pos,
+    style: {
+      left: `${sx}px`,
+      top: `${sy + pos * store.zoom}px`,
+      width: `${sw}px`,
+      height: `calc(1.5px / var(--zoom))`,
+    },
+  }));
+  return { vertical, horizontal };
+});
+
+const creatingGuide = ref<{ direction: 'vertical' | 'horizontal' } | null>(null);
+const creatingGuidePos = ref<number | null>(null);
+const draggingGuide = ref<{ direction: 'vertical' | 'horizontal'; from: number } | null>(null);
+const draggingGuidePos = ref<number | null>(null);
+
+const getLocalPoint = (e: MouseEvent) => {
+  const rect = wrapperRect.value;
+  if (!rect) return { x: 0, y: 0 };
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+};
+
+const creatingGuideStyle = computed(() => {
+  const scene = activeScene.value;
+  if (!scene || !creatingGuide.value || creatingGuidePos.value === null) return {};
+  const sx = sceneToWrapperX(0);
+  const sy = sceneToWrapperY(0);
+  const sw = scene.config.width * store.zoom;
+  const sh = scene.config.height * store.zoom;
+  if (creatingGuide.value.direction === 'vertical') {
+    return {
+      left: `${sx + creatingGuidePos.value * store.zoom}px`,
+      top: `${sy}px`,
+      height: `${sh}px`,
+      width: `calc(1.5px / var(--zoom))`,
+    };
+  }
+  return {
+    left: `${sx}px`,
+    top: `${sy + creatingGuidePos.value * store.zoom}px`,
+    width: `${sw}px`,
+    height: `calc(1.5px / var(--zoom))`,
+  };
+});
+
+const draggingGuideStyle = computed(() => {
+  const scene = activeScene.value;
+  if (!scene || !draggingGuide.value || draggingGuidePos.value === null) return {};
+  const sx = sceneToWrapperX(0);
+  const sy = sceneToWrapperY(0);
+  const sw = scene.config.width * store.zoom;
+  const sh = scene.config.height * store.zoom;
+  if (draggingGuide.value.direction === 'vertical') {
+    return {
+      left: `${sx + draggingGuidePos.value * store.zoom}px`,
+      top: `${sy}px`,
+      height: `${sh}px`,
+      width: `calc(1.5px / var(--zoom))`,
+    };
+  }
+  return {
+    left: `${sx}px`,
+    top: `${sy + draggingGuidePos.value * store.zoom}px`,
+    width: `${sw}px`,
+    height: `calc(1.5px / var(--zoom))`,
+  };
+});
+
+const startCreateGuide = (direction: 'vertical' | 'horizontal', e: MouseEvent) => {
+  if (!store.view.showGuides) return;
+  const scene = activeScene.value;
+  if (!scene) return;
+  updateWrapperRect();
+  creatingGuide.value = { direction };
+  const p = getLocalPoint(e);
+  creatingGuidePos.value = direction === 'vertical' ? wrapperToSceneX(p.x) : wrapperToSceneY(p.y);
+  window.addEventListener('mousemove', onCreateGuideMove);
+  window.addEventListener('mouseup', onCreateGuideUp);
+};
+
+const onCreateGuideMove = (e: MouseEvent) => {
+  if (!creatingGuide.value) return;
+  updateWrapperRect();
+  const p = getLocalPoint(e);
+  if (creatingGuide.value.direction === 'vertical') {
+    creatingGuidePos.value = wrapperToSceneX(p.x);
+  } else {
+    creatingGuidePos.value = wrapperToSceneY(p.y);
+  }
+};
+
+const onCreateGuideUp = () => {
+  const scene = activeScene.value;
+  if (creatingGuide.value && creatingGuidePos.value !== null && scene) {
+    const pos = creatingGuidePos.value;
+    if (creatingGuide.value.direction === 'vertical') {
+      if (pos >= 0 && pos <= scene.config.width) store.addGuide(scene.id, 'vertical', pos);
+    } else {
+      if (pos >= 0 && pos <= scene.config.height) store.addGuide(scene.id, 'horizontal', pos);
+    }
+  }
+  creatingGuide.value = null;
+  creatingGuidePos.value = null;
+  window.removeEventListener('mousemove', onCreateGuideMove);
+  window.removeEventListener('mouseup', onCreateGuideUp);
+};
+
+const startDragGuide = (direction: 'vertical' | 'horizontal', pos: number, e: MouseEvent) => {
+  if (!store.view.showGuides) return;
+  const scene = activeScene.value;
+  if (!scene) return;
+  updateWrapperRect();
+  draggingGuide.value = { direction, from: pos };
+  const p = getLocalPoint(e);
+  draggingGuidePos.value = direction === 'vertical' ? wrapperToSceneX(p.x) : wrapperToSceneY(p.y);
+  window.addEventListener('mousemove', onDragGuideMove);
+  window.addEventListener('mouseup', onDragGuideUp);
+};
+
+const onDragGuideMove = (e: MouseEvent) => {
+  if (!draggingGuide.value) return;
+  updateWrapperRect();
+  const p = getLocalPoint(e);
+  if (draggingGuide.value.direction === 'vertical') {
+    draggingGuidePos.value = wrapperToSceneX(p.x);
+  } else {
+    draggingGuidePos.value = wrapperToSceneY(p.y);
+  }
+};
+
+const onDragGuideUp = () => {
+  const scene = activeScene.value;
+  if (draggingGuide.value && draggingGuidePos.value !== null && scene) {
+    const { direction, from } = draggingGuide.value;
+    const pos = draggingGuidePos.value;
+    const max = direction === 'vertical' ? scene.config.width : scene.config.height;
+    if (pos < -20 || pos > max + 20) {
+      store.removeGuide(scene.id, direction, from);
+    } else {
+      store.updateGuide(scene.id, direction, from, pos);
+    }
+  }
+  draggingGuide.value = null;
+  draggingGuidePos.value = null;
+  window.removeEventListener('mousemove', onDragGuideMove);
+  window.removeEventListener('mouseup', onDragGuideUp);
+};
 
 // Pan state
 let isPanning = false;
@@ -288,16 +638,23 @@ const contextMenu = ref({
   x: 0,
   y: 0,
   sceneId: '',
-  nodeId: ''
+  nodeId: '',
+  guide: null as null | { direction: 'vertical' | 'horizontal'; pos: number }
 });
 
-const handleContextMenu = (e: MouseEvent | { clientX: number, clientY: number, shiftKey?: boolean }, sceneId?: string, nodeId?: string) => {
+const handleContextMenu = (
+  e: MouseEvent | { clientX: number; clientY: number; shiftKey?: boolean },
+  sceneId?: string,
+  nodeId?: string,
+  guide?: { direction: 'vertical' | 'horizontal'; pos: number }
+) => {
   contextMenu.value = {
     show: true,
     x: e.clientX,
     y: e.clientY,
     sceneId: sceneId || '',
-    nodeId: nodeId || ''
+    nodeId: nodeId || '',
+    guide: guide || null
   };
   
   const isShift = 'shiftKey' in e ? e.shiftKey : false;
@@ -361,6 +718,11 @@ const handleContextAction = (action: string) => {
     case 'to-back':
       store.sendToBack();
       break;
+    case 'delete-guide': {
+      const g = contextMenu.value.guide;
+      if (sceneId && g) store.removeGuide(sceneId, g.direction, g.pos);
+      break;
+    }
   }
   closeContextMenu();
 };
@@ -801,113 +1163,343 @@ const clearDistanceGuides = () => {
   distanceGuides.value = [];
 };
 
+const clampNumber = (value: number, min: number, max: number) => {
+  if (Number.isNaN(value)) return min;
+  if (max < min) return min;
+  return Math.min(max, Math.max(min, value));
+};
+
+const clampTargetWithinParent = (target: HTMLElement, left: number, top: number) => {
+  const offsetParent = target.offsetParent as HTMLElement | null;
+  const parentW = offsetParent ? offsetParent.clientWidth : (activeScene.value?.config.width ?? 0);
+  const parentH = offsetParent ? offsetParent.clientHeight : (activeScene.value?.config.height ?? 0);
+  const w = target.offsetWidth;
+  const h = target.offsetHeight;
+  return {
+    left: clampNumber(left, 0, Math.max(0, parentW - w)),
+    top: clampNumber(top, 0, Math.max(0, parentH - h)),
+  };
+};
+
 const buildDistanceGuides = (targetEl: HTMLElement, baseLeft: number, baseTop: number, gapPx: number) => {
+  if (!store.snap.enabled || !store.snap.showDistanceGuides) {
+    distanceGuides.value = [];
+    return { left: baseLeft, top: baseTop };
+  }
   const guides: DistanceGuide[] = [];
   const rect = targetEl.getBoundingClientRect();
+  const canvasRect = canvasRef.value ? canvasRef.value.getBoundingClientRect() : null;
+  const xMid = rect.left + rect.width / 2;
+  const yMid = rect.top + rect.height / 2;
+
+  const snapThresholdPx = store.snap.threshold;
+  const thickness = 1.5 / store.zoom;
+  const capLen = 8 / store.zoom;
+  const capHalf = capLen / 2;
+
+  const overlapMin = 6;
   const others = (Array.from(document.querySelectorAll('.editor-node')) as HTMLElement[])
     .filter(el => el !== targetEl)
     .filter(el => el.offsetParent !== null);
 
-  const snapThresholdPx = 10;
+  const otherRects = others.map(el => ({ el, rect: el.getBoundingClientRect() }));
 
-  let bestH: { dist: number; x1: number; x2: number; y: number; side: 'left' | 'right' } | null = null;
-  let bestV: { dist: number; y1: number; y2: number; x: number; side: 'top' | 'bottom' } | null = null;
+  const overlapY = (a: DOMRect, b: DOMRect) => Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  const overlapX = (a: DOMRect, b: DOMRect) => Math.min(a.right, b.right) - Math.max(a.left, b.left);
 
-  for (const el of others) {
-    const r = el.getBoundingClientRect();
-    const overlapY = Math.min(rect.bottom, r.bottom) - Math.max(rect.top, r.top);
-    const overlapX = Math.min(rect.right, r.right) - Math.max(rect.left, r.left);
-
-    if (overlapY > 6) {
-      const distLeft = rect.left - r.right;
-      const distRight = r.left - rect.right;
-      const y = Math.max(rect.top, r.top) + overlapY / 2;
-
-      if (distLeft >= 0 && (!bestH || distLeft < bestH.dist)) {
-        bestH = { dist: distLeft, x1: r.right, x2: rect.left, y, side: 'left' };
-      }
-      if (distRight >= 0 && (!bestH || distRight < bestH.dist)) {
-        bestH = { dist: distRight, x1: rect.right, x2: r.left, y, side: 'right' };
+  const findNearestHorizontal = (direction: 'left' | 'right') => {
+    let best: { el: HTMLElement; rect: DOMRect; distPx: number } | null = null;
+    for (const o of otherRects) {
+      if (overlapY(rect, o.rect) <= overlapMin) continue;
+      if (direction === 'left') {
+        const d = rect.left - o.rect.right;
+        if (d >= 0 && (!best || d < best.distPx)) best = { ...o, distPx: d };
+      } else {
+        const d = o.rect.left - rect.right;
+        if (d >= 0 && (!best || d < best.distPx)) best = { ...o, distPx: d };
       }
     }
+    return best;
+  };
 
-    if (overlapX > 6) {
-      const distTop = rect.top - r.bottom;
-      const distBottom = r.top - rect.bottom;
-      const x = Math.max(rect.left, r.left) + overlapX / 2;
-
-      if (distTop >= 0 && (!bestV || distTop < bestV.dist)) {
-        bestV = { dist: distTop, y1: r.bottom, y2: rect.top, x, side: 'top' };
-      }
-      if (distBottom >= 0 && (!bestV || distBottom < bestV.dist)) {
-        bestV = { dist: distBottom, y1: rect.bottom, y2: r.top, x, side: 'bottom' };
+  const findNearestVertical = (direction: 'top' | 'bottom') => {
+    let best: { el: HTMLElement; rect: DOMRect; distPx: number } | null = null;
+    for (const o of otherRects) {
+      if (overlapX(rect, o.rect) <= overlapMin) continue;
+      if (direction === 'top') {
+        const d = rect.top - o.rect.bottom;
+        if (d >= 0 && (!best || d < best.distPx)) best = { ...o, distPx: d };
+      } else {
+        const d = o.rect.top - rect.bottom;
+        if (d >= 0 && (!best || d < best.distPx)) best = { ...o, distPx: d };
       }
     }
-  }
+    return best;
+  };
+
+  const findNeighborGapRefHorizontal = (base: DOMRect, direction: 'left' | 'right') => {
+    let best: { rect: DOMRect; distPx: number } | null = null;
+    for (const o of otherRects) {
+      if (overlapY(base, o.rect) <= overlapMin) continue;
+      if (direction === 'right') {
+        const d = o.rect.left - base.right;
+        if (d >= 0 && (!best || d < best.distPx)) best = { rect: o.rect, distPx: d };
+      } else {
+        const d = base.left - o.rect.right;
+        if (d >= 0 && (!best || d < best.distPx)) best = { rect: o.rect, distPx: d };
+      }
+    }
+    return best?.distPx ?? null;
+  };
+
+  const findNeighborGapRefVertical = (base: DOMRect, direction: 'top' | 'bottom') => {
+    let best: { rect: DOMRect; distPx: number } | null = null;
+    for (const o of otherRects) {
+      if (overlapX(base, o.rect) <= overlapMin) continue;
+      if (direction === 'bottom') {
+        const d = o.rect.top - base.bottom;
+        if (d >= 0 && (!best || d < best.distPx)) best = { rect: o.rect, distPx: d };
+      } else {
+        const d = base.top - o.rect.bottom;
+        if (d >= 0 && (!best || d < best.distPx)) best = { rect: o.rect, distPx: d };
+      }
+    }
+    return best?.distPx ?? null;
+  };
+
+  const buildHorizontalGuide = (leftPx: number, rightPx: number, yPx: number, label: string) => {
+    const xMin = Math.min(leftPx, rightPx);
+    const xMax = Math.max(leftPx, rightPx);
+    guides.push({
+      orientation: 'horizontal',
+      lineStyle: {
+        position: 'fixed',
+        left: `${xMin}px`,
+        top: `${yPx}px`,
+        width: `${Math.max(0, xMax - xMin)}px`,
+        height: `${thickness}px`,
+        transform: 'translateY(-50%)',
+        backgroundImage:
+          'repeating-linear-gradient(to right, var(--el-color-danger) 0, var(--el-color-danger) 6px, transparent 6px, transparent 10px)',
+      },
+      caps: [
+        { style: { position: 'fixed', left: `${xMin}px`, top: `${yPx - capHalf}px`, width: `${thickness}px`, height: `${capLen}px` } },
+        { style: { position: 'fixed', left: `${xMax}px`, top: `${yPx - capHalf}px`, width: `${thickness}px`, height: `${capLen}px` } },
+      ],
+      labelStyle: {
+        position: 'fixed',
+        left: `${(xMin + xMax) / 2}px`,
+        top: `${yPx}px`,
+        transform: 'translate(-50%, calc(-100% - 6px))',
+      },
+      label,
+    });
+  };
+
+  const buildVerticalGuide = (topPx: number, bottomPx: number, xPx: number, label: string) => {
+    const yMin = Math.min(topPx, bottomPx);
+    const yMax = Math.max(topPx, bottomPx);
+    guides.push({
+      orientation: 'vertical',
+      lineStyle: {
+        position: 'fixed',
+        left: `${xPx}px`,
+        top: `${yMin}px`,
+        width: `${thickness}px`,
+        height: `${Math.max(0, yMax - yMin)}px`,
+        transform: 'translateX(-50%)',
+        backgroundImage:
+          'repeating-linear-gradient(to bottom, var(--el-color-danger) 0, var(--el-color-danger) 6px, transparent 6px, transparent 10px)',
+      },
+      caps: [
+        { style: { position: 'fixed', left: `${xPx - capHalf}px`, top: `${yMin}px`, width: `${capLen}px`, height: `${thickness}px` } },
+        { style: { position: 'fixed', left: `${xPx - capHalf}px`, top: `${yMax}px`, width: `${capLen}px`, height: `${thickness}px` } },
+      ],
+      labelStyle: {
+        position: 'fixed',
+        left: `${xPx}px`,
+        top: `${(yMin + yMax) / 2}px`,
+        transform: 'translate(calc(-100% - 6px), -50%)',
+      },
+      label,
+    });
+  };
+
+  const buildEdgeHorizontalGuide = (leftPx: number, rightPx: number, yPx: number, label: string, place: 'above' | 'below') => {
+    const xMin = Math.min(leftPx, rightPx);
+    const xMax = Math.max(leftPx, rightPx);
+    const color = 'rgba(17, 24, 39, 0.55)';
+    guides.push({
+      orientation: 'horizontal',
+      lineStyle: {
+        position: 'fixed',
+        left: `${xMin}px`,
+        top: `${yPx}px`,
+        width: `${Math.max(0, xMax - xMin)}px`,
+        height: `${thickness}px`,
+        transform: 'translateY(-50%)',
+        backgroundImage: `repeating-linear-gradient(to right, ${color} 0, ${color} 6px, transparent 6px, transparent 10px)`,
+      },
+      caps: [
+        { style: { position: 'fixed', left: `${xMin}px`, top: `${yPx - capHalf}px`, width: `${thickness}px`, height: `${capLen}px`, backgroundColor: color } },
+        { style: { position: 'fixed', left: `${xMax}px`, top: `${yPx - capHalf}px`, width: `${thickness}px`, height: `${capLen}px`, backgroundColor: color } },
+      ],
+      labelStyle: {
+        position: 'fixed',
+        left: `${(xMin + xMax) / 2}px`,
+        top: `${yPx}px`,
+        transform: place === 'above' ? 'translate(-50%, calc(-100% - 6px))' : 'translate(-50%, 6px)',
+        backgroundColor: 'rgba(17, 24, 39, 0.78)',
+        color: '#fff',
+      },
+      label,
+    });
+  };
+
+  const buildEdgeVerticalGuide = (topPx: number, bottomPx: number, xPx: number, label: string, place: 'left' | 'right') => {
+    const yMin = Math.min(topPx, bottomPx);
+    const yMax = Math.max(topPx, bottomPx);
+    const color = 'rgba(17, 24, 39, 0.55)';
+    guides.push({
+      orientation: 'vertical',
+      lineStyle: {
+        position: 'fixed',
+        left: `${xPx}px`,
+        top: `${yMin}px`,
+        width: `${thickness}px`,
+        height: `${Math.max(0, yMax - yMin)}px`,
+        transform: 'translateX(-50%)',
+        backgroundImage: `repeating-linear-gradient(to bottom, ${color} 0, ${color} 6px, transparent 6px, transparent 10px)`,
+      },
+      caps: [
+        { style: { position: 'fixed', left: `${xPx - capHalf}px`, top: `${yMin}px`, width: `${capLen}px`, height: `${thickness}px`, backgroundColor: color } },
+        { style: { position: 'fixed', left: `${xPx - capHalf}px`, top: `${yMax}px`, width: `${capLen}px`, height: `${thickness}px`, backgroundColor: color } },
+      ],
+      labelStyle: {
+        position: 'fixed',
+        left: `${xPx}px`,
+        top: `${(yMin + yMax) / 2}px`,
+        transform: place === 'left' ? 'translate(calc(-100% - 6px), -50%)' : 'translate(6px, -50%)',
+        backgroundColor: 'rgba(17, 24, 39, 0.78)',
+        color: '#fff',
+      },
+      label,
+    });
+  };
 
   let nextLeft = baseLeft;
   let nextTop = baseTop;
 
-  if (bestH !== null) {
-    const h = bestH;
-    const distCanvas = h.dist / store.zoom;
-    const xMin = Math.min(h.x1, h.x2);
-    const xMax = Math.max(h.x1, h.x2);
-    guides.push({
-      lineStyle: {
-        position: 'fixed',
-        left: `${xMin}px`,
-        top: `${h.y}px`,
-        width: `${Math.max(0, xMax - xMin)}px`,
-        height: `calc(1.5px / var(--zoom))`,
-      },
-      labelStyle: {
-        position: 'fixed',
-        left: `${(xMin + xMax) / 2}px`,
-        top: `${h.y}px`,
-        transform: 'translate(-50%, calc(-100% - 6px))',
-      },
-      label: `${Math.round(distCanvas)}px`,
-    });
+  const candLeft = findNearestHorizontal('left');
+  const candRight = findNearestHorizontal('right');
+  const candTop = findNearestVertical('top');
+  const candBottom = findNearestVertical('bottom');
 
-    if (Math.abs(distCanvas - gapPx) <= snapThresholdPx) {
-      if (h.side === 'left') {
-        nextLeft = baseLeft + (gapPx - distCanvas);
-      } else {
-        nextLeft = baseLeft + (distCanvas - gapPx);
-      }
+  type SnapCandidate = { axis: 'x' | 'y'; score: number; delta: number; guide?: () => void };
+  const snapCandidates: SnapCandidate[] = [];
+
+  if (candLeft) {
+    const currentGap = candLeft.distPx / store.zoom;
+    const refGapPx = findNeighborGapRefHorizontal(candLeft.rect, 'right');
+    const refGap = refGapPx !== null ? refGapPx / store.zoom : null;
+    const desired = refGap !== null ? refGap : gapPx;
+    const score = Math.abs(currentGap - desired);
+    if (score <= snapThresholdPx) {
+      const delta = desired - currentGap;
+      snapCandidates.push({
+        axis: 'x',
+        score,
+        delta,
+        guide: () => {
+          const y = Math.max(rect.top, candLeft.rect.top) + overlapY(rect, candLeft.rect) / 2;
+          buildHorizontalGuide(candLeft.rect.right, rect.left, y, `${Math.round(desired)}px`);
+        },
+      });
     }
   }
 
-  if (bestV !== null) {
-    const v = bestV;
-    const distCanvas = v.dist / store.zoom;
-    const yMin = Math.min(v.y1, v.y2);
-    const yMax = Math.max(v.y1, v.y2);
-    guides.push({
-      lineStyle: {
-        position: 'fixed',
-        left: `${v.x}px`,
-        top: `${yMin}px`,
-        width: `calc(1.5px / var(--zoom))`,
-        height: `${Math.max(0, yMax - yMin)}px`,
-      },
-      labelStyle: {
-        position: 'fixed',
-        left: `${v.x}px`,
-        top: `${(yMin + yMax) / 2}px`,
-        transform: 'translate(calc(-100% - 6px), -50%)',
-      },
-      label: `${Math.round(distCanvas)}px`,
-    });
-
-    if (Math.abs(distCanvas - gapPx) <= snapThresholdPx) {
-      if (v.side === 'top') {
-        nextTop = baseTop + (gapPx - distCanvas);
-      } else {
-        nextTop = baseTop + (distCanvas - gapPx);
-      }
+  if (candRight) {
+    const currentGap = candRight.distPx / store.zoom;
+    const refGapPx = findNeighborGapRefHorizontal(candRight.rect, 'left');
+    const refGap = refGapPx !== null ? refGapPx / store.zoom : null;
+    const desired = refGap !== null ? refGap : gapPx;
+    const score = Math.abs(currentGap - desired);
+    if (score <= snapThresholdPx) {
+      const delta = desired - currentGap;
+      snapCandidates.push({
+        axis: 'x',
+        score,
+        delta,
+        guide: () => {
+          const y = Math.max(rect.top, candRight.rect.top) + overlapY(rect, candRight.rect) / 2;
+          buildHorizontalGuide(rect.right, candRight.rect.left, y, `${Math.round(desired)}px`);
+        },
+      });
     }
+  }
+
+  if (candTop) {
+    const currentGap = candTop.distPx / store.zoom;
+    const refGapPx = findNeighborGapRefVertical(candTop.rect, 'bottom');
+    const refGap = refGapPx !== null ? refGapPx / store.zoom : null;
+    const desired = refGap !== null ? refGap : gapPx;
+    const score = Math.abs(currentGap - desired);
+    if (score <= snapThresholdPx) {
+      const delta = desired - currentGap;
+      snapCandidates.push({
+        axis: 'y',
+        score,
+        delta,
+        guide: () => {
+          const x = Math.max(rect.left, candTop.rect.left) + overlapX(rect, candTop.rect) / 2;
+          buildVerticalGuide(candTop.rect.bottom, rect.top, x, `${Math.round(desired)}px`);
+        },
+      });
+    }
+  }
+
+  if (candBottom) {
+    const currentGap = candBottom.distPx / store.zoom;
+    const refGapPx = findNeighborGapRefVertical(candBottom.rect, 'top');
+    const refGap = refGapPx !== null ? refGapPx / store.zoom : null;
+    const desired = refGap !== null ? refGap : gapPx;
+    const score = Math.abs(currentGap - desired);
+    if (score <= snapThresholdPx) {
+      const delta = desired - currentGap;
+      snapCandidates.push({
+        axis: 'y',
+        score,
+        delta,
+        guide: () => {
+          const x = Math.max(rect.left, candBottom.rect.left) + overlapX(rect, candBottom.rect) / 2;
+          buildVerticalGuide(rect.bottom, candBottom.rect.top, x, `${Math.round(desired)}px`);
+        },
+      });
+    }
+  }
+
+  const bestX = snapCandidates.filter(c => c.axis === 'x').sort((a, b) => a.score - b.score)[0];
+  const bestY = snapCandidates.filter(c => c.axis === 'y').sort((a, b) => a.score - b.score)[0];
+
+  if (bestX) {
+    nextLeft = baseLeft + bestX.delta;
+    bestX.guide?.();
+  }
+  if (bestY) {
+    nextTop = baseTop + bestY.delta;
+    bestY.guide?.();
+  }
+
+  if (canvasRect) {
+    const leftDist = Math.max(0, (rect.left - canvasRect.left) / store.zoom);
+    const rightDist = Math.max(0, (canvasRect.right - rect.right) / store.zoom);
+    const topDist = Math.max(0, (rect.top - canvasRect.top) / store.zoom);
+    const bottomDist = Math.max(0, (canvasRect.bottom - rect.bottom) / store.zoom);
+
+    buildEdgeHorizontalGuide(canvasRect.left, rect.left, yMid, `${Math.round(leftDist)}px`, 'above');
+    buildEdgeHorizontalGuide(rect.right, canvasRect.right, yMid, `${Math.round(rightDist)}px`, 'below');
+    buildEdgeVerticalGuide(canvasRect.top, rect.top, xMid, `${Math.round(topDist)}px`, 'left');
+    buildEdgeVerticalGuide(rect.bottom, canvasRect.bottom, xMid, `${Math.round(bottomDist)}px`, 'right');
   }
 
   distanceGuides.value = guides;
@@ -916,16 +1508,24 @@ const buildDistanceGuides = (targetEl: HTMLElement, baseLeft: number, baseTop: n
 
 // Single Target Events
 const onDrag = throttle(({ target, left, top }: any) => {
-  target.style.left = `${left}px`;
-  target.style.top = `${top}px`;
-  const snapped = buildDistanceGuides(target, left, top, 8);
-  if (snapped.left !== left || snapped.top !== top) {
-    target.style.left = `${snapped.left}px`;
-    target.style.top = `${snapped.top}px`;
-    maybeExpandCanvasByTarget(target, { left: snapped.left, top: snapped.top });
-    return;
+  let nextLeft = left;
+  let nextTop = top;
+  const snapped = buildDistanceGuides(target, nextLeft, nextTop, store.snap.gapPx);
+  nextLeft = snapped.left;
+  nextTop = snapped.top;
+
+  if (!store.canvasAutoExpand) {
+    const clamped = clampTargetWithinParent(target, nextLeft, nextTop);
+    nextLeft = clamped.left;
+    nextTop = clamped.top;
   }
-  maybeExpandCanvasByTarget(target, { left, top });
+
+  nextLeft = Math.round(nextLeft);
+  nextTop = Math.round(nextTop);
+
+  target.style.left = `${nextLeft}px`;
+  target.style.top = `${nextTop}px`;
+  maybeExpandCanvasByTarget(target, { left: nextLeft, top: nextTop });
 }, 16);
 
 const onDragEnd = ({ target }: any) => {
@@ -949,8 +1549,8 @@ const onDragEnd = ({ target }: any) => {
        const containerRect = container.getBoundingClientRect();
        const nodeRect = target.getBoundingClientRect();
        
-       const relativeLeft = (nodeRect.left - containerRect.left) / store.zoom;
-       const relativeTop = (nodeRect.top - containerRect.top) / store.zoom;
+       const relativeLeft = Math.round((nodeRect.left - containerRect.left) / store.zoom);
+       const relativeTop = Math.round((nodeRect.top - containerRect.top) / store.zoom);
        
        store.moveNodeToParent(target.id, container.id);
        store.updateNodeStyle(target.id, {
@@ -966,8 +1566,8 @@ const onDragEnd = ({ target }: any) => {
            if (!container) {
                const canvasRect = canvasRef.value!.getBoundingClientRect();
                const nodeRect = target.getBoundingClientRect();
-               const absLeft = (nodeRect.left - canvasRect.left) / store.zoom;
-               const absTop = (nodeRect.top - canvasRect.top) / store.zoom;
+               const absLeft = Math.round((nodeRect.left - canvasRect.left) / store.zoom);
+               const absTop = Math.round((nodeRect.top - canvasRect.top) / store.zoom);
                
                store.moveNodeToParent(target.id, undefined);
                store.updateNodeStyle(target.id, {
@@ -1019,13 +1619,24 @@ const onRotateEnd = ({ target }: any) => {
 
 // Group Events
 const onDragGroup = ({ events }: any) => {
+    clearDistanceGuides();
     events.forEach((ev: any) => {
-        ev.target.style.left = `${ev.left}px`;
-        ev.target.style.top = `${ev.top}px`;
+        let nextLeft = ev.left;
+        let nextTop = ev.top;
+        if (!store.canvasAutoExpand) {
+            const clamped = clampTargetWithinParent(ev.target, nextLeft, nextTop);
+            nextLeft = clamped.left;
+            nextTop = clamped.top;
+        }
+        nextLeft = Math.round(nextLeft);
+        nextTop = Math.round(nextTop);
+        ev.target.style.left = `${nextLeft}px`;
+        ev.target.style.top = `${nextTop}px`;
     });
 };
 
 const onDragGroupEnd = ({ events }: any) => {
+    clearDistanceGuides();
     events.forEach((ev: any) => {
         store.updateNodeStyle(ev.target.id, {
             left: ev.target.style.left,
@@ -1072,6 +1683,15 @@ watch(() => store.selectedNodeIds, () => {
   nextTick(updateTarget);
 }, { deep: true });
 
+onMounted(() => {
+  updateWrapperRect();
+  window.addEventListener('resize', updateWrapperRect);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('resize', updateWrapperRect);
+});
+
 </script>
 
 <style scoped>
@@ -1079,9 +1699,10 @@ watch(() => store.selectedNodeIds, () => {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  position: relative;
   background-color: var(--bg-color);
   background-image:
-    linear-gradient(to right, rgba(17, 24, 39, 0.05) 1px, transparent 1px),
+     linear-gradient(to right, rgba(17, 24, 39, 0.05) 1px, transparent 1px),
     linear-gradient(to bottom, rgba(17, 24, 39, 0.05) 1px, transparent 1px);
   background-size: 48px 48px;
   position: relative;
@@ -1252,15 +1873,24 @@ watch(() => store.selectedNodeIds, () => {
 }
 
 .distance-guide-line {
-  background: var(--primary-color);
-  opacity: 0.9;
+  background-color: transparent;
+  background-repeat: repeat;
+  background-size: auto;
+  opacity: 0.95;
+  z-index: 10000;
+  pointer-events: none;
+}
+
+.distance-guide-cap {
+  background: var(--el-color-danger);
+  opacity: 0.95;
   z-index: 10000;
   pointer-events: none;
 }
 
 .distance-guide-label {
   color: #fff;
-  background: var(--primary-color);
+  background: var(--el-color-danger);
   padding: calc(2px / var(--zoom)) calc(4px / var(--zoom));
   border-radius: calc(2px / var(--zoom));
   font-size: calc(11px / var(--zoom));
@@ -1269,5 +1899,101 @@ watch(() => store.selectedNodeIds, () => {
   z-index: 10001;
   pointer-events: none;
   white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+
+.ruler-corner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 20px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.92);
+  border-right: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  z-index: 12000;
+  backdrop-filter: saturate(150%) blur(10px);
+}
+
+.ruler {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: saturate(150%) blur(10px);
+  z-index: 12000;
+  user-select: none;
+}
+
+.ruler-x {
+  left: 20px;
+  top: 0;
+  right: 0;
+  height: 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.ruler-y {
+  left: 0;
+  top: 20px;
+  bottom: 0;
+  width: 20px;
+  border-right: 1px solid var(--border-color);
+}
+
+.ruler-tick {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  transform: translateX(-0.5px);
+}
+
+.ruler-tick-y {
+  left: 0;
+  width: 100%;
+  transform: translateY(-0.5px);
+}
+
+.ruler-tick-line {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: rgba(17, 24, 39, 0.18);
+}
+
+.ruler-tick-y .ruler-tick-line {
+  width: 100%;
+  height: 1px;
+}
+
+.ruler-tick-label {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  font-size: 10px;
+  color: rgba(17, 24, 39, 0.65);
+  transform: scale(calc(1 / var(--zoom)));
+  transform-origin: left top;
+}
+
+.ruler-tick-y .ruler-tick-label {
+  left: 2px;
+  top: 2px;
+}
+
+.canvas-guide {
+  position: absolute;
+  background: var(--primary-color);
+  opacity: 0.9;
+  z-index: 11000;
+  cursor: pointer;
+}
+
+.canvas-guide-preview {
+  position: absolute;
+  background: var(--primary-color);
+  opacity: 0.55;
+  z-index: 11001;
+  pointer-events: none;
 }
 </style>

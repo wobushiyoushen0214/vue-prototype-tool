@@ -49,16 +49,24 @@
               <el-row :gutter="10">
                 <el-col :span="12">
                   <el-form-item label="X">
-                    <el-input v-model="selectedNode.style.left" @change="handleStyleChange">
-                      <template #suffix>px</template>
-                    </el-input>
+                    <el-input-number
+                      :model-value="Math.round(getPxNumber(selectedNode.style.left))"
+                      @update:model-value="setPxStyle('left', $event)"
+                      :step="1"
+                      controls-position="right"
+                      style="width: 100%"
+                    />
                   </el-form-item>
                 </el-col>
                 <el-col :span="12">
                   <el-form-item label="Y">
-                    <el-input v-model="selectedNode.style.top" @change="handleStyleChange">
-                      <template #suffix>px</template>
-                    </el-input>
+                    <el-input-number
+                      :model-value="Math.round(getPxNumber(selectedNode.style.top))"
+                      @update:model-value="setPxStyle('top', $event)"
+                      :step="1"
+                      controls-position="right"
+                      style="width: 100%"
+                    />
                   </el-form-item>
                 </el-col>
                 <el-col :span="12">
@@ -378,7 +386,7 @@
                       </div>
                       
                       <div
-                        v-for="(item, index) in (Array.isArray(selectedNode.props[key]) ? selectedNode.props[key] : [])"
+                        v-for="(_item, index) in (Array.isArray(selectedNode.props[key]) ? selectedNode.props[key] : [])"
                         :key="index"
                         class="option-item-card"
                       >
@@ -799,7 +807,9 @@ const setOpacity = (val: number | null) => {
 const setPxStyle = (key: string, value: any) => {
   if (!selectedNode.value) return;
   const n = value === null || value === undefined ? 0 : Number(value);
-  store.updateNodeStyle(selectedNode.value.id, { [key]: `${Number.isFinite(n) ? n : 0}px` });
+  const safe = Number.isFinite(n) ? n : 0;
+  const next = key === 'left' || key === 'top' ? Math.round(safe) : safe;
+  store.updateNodeStyle(selectedNode.value.id, { [key]: `${next}px` });
 };
 
 const getRotateDeg = (transform: any) => {
